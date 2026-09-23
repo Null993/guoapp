@@ -2,7 +2,6 @@ import 'dart:async';
 import 'dart:convert';
 
 import 'package:duanju_app/local_profiles.dart';
-import 'package:duanju_app/local_store.dart';
 import 'package:duanju_app/models.dart';
 import 'package:duanju_app/source_status.dart';
 import 'package:duanju_app/sources_screen.dart';
@@ -67,7 +66,9 @@ void main() {
     'source update prevents duplicate submits and can stop without losing cache',
     (tester) async {
       SharedPreferences.setMockInitialValues({});
-      final store = LocalStore(await SharedPreferences.getInstance());
+      final store = testStore(await SharedPreferences.getInstance());
+      // 管理员默认可见全部站源；显式启用密码锁以覆盖解锁后的站源范围。
+      await store.enableSourceGate('666666');
       final repository = SourceFixtureRepository()
         ..pending = Completer<SourceStatus>();
       await tester.pumpWidget(
@@ -116,7 +117,7 @@ void main() {
         ]),
         'activeProfile': 'viewer',
       });
-      final store = LocalStore(await SharedPreferences.getInstance());
+      final store = testStore(await SharedPreferences.getInstance());
       final repository = SourceFixtureRepository();
       await tester.pumpWidget(
         MaterialApp(
@@ -139,7 +140,7 @@ void main() {
       'source diagnostics remain collapsed through $operation polling and completion',
       (tester) async {
         SharedPreferences.setMockInitialValues({});
-        final store = LocalStore(await SharedPreferences.getInstance());
+        final store = testStore(await SharedPreferences.getInstance());
         SourceStatus status(String state, {bool running = false}) =>
             SourceStatus.fromJson({
               'source': 'hongguo',
@@ -242,7 +243,7 @@ void main() {
       addTearDown(tester.view.resetPhysicalSize);
       addTearDown(tester.view.resetDevicePixelRatio);
       SharedPreferences.setMockInitialValues({});
-      final store = LocalStore(await SharedPreferences.getInstance());
+      final store = testStore(await SharedPreferences.getInstance());
       final repository = SourceFixtureRepository();
       repository.statuses['hongguo'] = SourceStatus.fromJson({
         'source': 'hongguo',

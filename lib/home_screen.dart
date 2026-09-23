@@ -23,6 +23,8 @@ import 'vip_icon.dart';
 import 'settings_screen.dart';
 import 'profiles_screen.dart';
 import 'search_input.dart';
+import 'source_gate_dialog.dart';
+import 'source_gate_taps.dart';
 import 'sources_screen.dart';
 import 'batch_download_screen.dart';
 import 'batch_downloads.dart';
@@ -68,7 +70,8 @@ class _HomeScreenState extends State<HomeScreen> {
   bool _updateNotice = false;
   bool _selectionMode = false;
   bool _showRecommendations = false;
-
+  final _recentTaps = RepeatTapGate();
+  String _sourceSignature = '';
   List<SourceGroup> get _sourceGroups {
     final groups = SourceGroup.fromSources(widget.store.sources);
     return [
@@ -154,6 +157,32 @@ class _HomeScreenState extends State<HomeScreen> {
 
   void _updateChanged() {
     if (mounted) setState(() {});
+  }
+
+  /// 密码锁切换后可见站源会变，这里把当前站源归一化到仍然可见的站源。
+  void _sourcesChanged() {
+    if (!mounted) return;
+    final visible = widget.store.sources;
+    final signature = visible.map((site) => site.id).join(',');
+    if (signature == _sourceSignature) return;
+    final wasEmpty = _sourceSignature.isEmpty;
+    _sourceSignature = signature;
+    if (visible.isEmpty) {
+      setState(() {
+        _items = [];
+        _hasMore = false;
+        _loading = false;
+        _loadingMore = false;
+      });
+      return;
+    }
+    final allowed = visible.map((site) => site.id).toSet();
+    if (!wasEmpty &&
+        allowed.contains(_source.id) &&
+        _source.id == widget.store.source) {
+      return;
+    }
+    _changeSource(SourceSite.byId(widget.store.source));
   }
 
   void _catalogUpdated(String source) {
@@ -395,13 +424,16 @@ class _HomeScreenState extends State<HomeScreen> {
     super.initState();
     _source = SourceSite.byId(widget.store.source);
     _allSources = widget.store.catalogView.allSources;
+    _sourceSignature = widget.store.sources.map((site) => site.id).join(',');
     _browser = CatalogBrowser(widget.repository);
+    _scroll.addListener(_maybeLoadMore);
     _updater = LibraryUpdater(
       widget.repository,
       widget.store,
       onCatalogChanged: _catalogUpdated,
     )..addListener(_updateChanged);
     _updater.startWatching();
+    widget.store.addListener(_sourcesChanged);
     widget.repository.catalogUpdates.addListener(_metadataChanged);
     if (widget.store.sources.isNotEmpty) {
       _load(useCache: true);
@@ -416,15 +448,62 @@ class _HomeScreenState extends State<HomeScreen> {
     _updater.removeListener(_updateChanged);
     _updater.dispose();
     _cacheRefreshTimer?.cancel();
+    widget.store.removeListener(_sourcesChanged);
     widget.repository.catalogUpdates.removeListener(_metadataChanged);
     _generation++;
     _categoryGeneration++;
     unawaited(_browser.cancel());
     unawaited(widget.repository.cancelSuggestions());
     _debounce?.cancel();
+    _scroll.removeListener(_maybeLoadMore);
     _search.dispose();
     _scroll.dispose();
     super.dispose();
+  }
+
+  /// 滚动接近底部时自动翻页（TVBox 影视壳式体验），无需手动点“加载更多”。
+  /// 失败过的页不自动重试，避免滚动到底时反复打无效请求。
+  void _maybeLoadMore() {
+    if (!mounted || !_scroll.hasClients) return;
+    if (_loading || _loadingMore || !_hasMore || _failedMore) return;
+    if (_showRecommendations) return;
+    final position = _scroll.position;
+    if (!position.hasContentDimensions) return;
+    if (position.pixels < position.maxScrollExtent - 400) return;
+    unawaited(_load(more: true));
+  }
+
+  /// 目录底部状态：加载中 / 失败重试 / 可继续下滑 / 已到底。
+  /// 自动翻页由 [_maybeLoadMore] 驱动，这里只在失败时给出可点的重试入口。
+  ///
+  /// 注意：非 loading 分支不能放 CircularProgressIndicator —— 无限动画会让
+  /// widget 测试的 pumpAndSettle 永远等不到静止（已踩过这个坑）。
+  Widget _catalogFooter(BuildContext context, {required bool remote}) {
+    if (_loadingMore) {
+      return const CircularProgressIndicator();
+    }
+    if (_failedMore) {
+      if (remote) {
+        return RemoteButton(
+          label: '加载失败，重试',
+          icon: Icons.refresh,
+          onPressed: () => _load(more: true),
+        );
+      }
+      return OutlinedButton.icon(
+        onPressed: () => _load(more: true),
+        icon: const Icon(Icons.refresh),
+        label: const Text('加载失败，重试'),
+      );
+    }
+    final hint = Text(
+      _hasMore ? '继续下滑自动加载' : '已经看到这里的全部剧集',
+      style: TextStyle(
+        color: Theme.of(context).colorScheme.onSurfaceVariant,
+        fontSize: 12,
+      ),
+    );
+    return hint;
   }
 
   void _metadataChanged() {
@@ -604,6 +683,24 @@ class _HomeScreenState extends State<HomeScreen> {
     _selectionMode = false;
     _selectedDramas.clear();
   });
+
+  /// 连点「最近观看」6 次弹出站源密码锁（用于启用 / 关闭密码功能）。
+  void _onNavSelected(int tab) {
+    if (tab == 2) {
+      if (_recentTaps.register(tab)) {
+        _openSourceGate();
+        return;
+      }
+    } else {
+      _recentTaps.reset();
+    }
+    _changeTab(tab);
+  }
+
+  void _openSourceGate() {
+    _pauseCatalog();
+    unawaited(showSourceGateDialog(context, widget.store));
+  }
 
   void _cancelSelection() => setState(() {
     _selectionMode = false;
@@ -961,7 +1058,7 @@ class _HomeScreenState extends State<HomeScreen> {
                                 icon: entry.$2.$1,
                                 selected: _tab == entry.$1,
                                 autofocus: entry.$1 == 0,
-                                onPressed: () => _changeTab(entry.$1),
+                                onPressed: () => _onNavSelected(entry.$1),
                               ),
                             ),
                         ],
@@ -972,7 +1069,7 @@ class _HomeScreenState extends State<HomeScreen> {
                 ] else if (desktop) ...[
                   NavigationRail(
                     selectedIndex: _tab,
-                    onDestinationSelected: _changeTab,
+                    onDestinationSelected: _onNavSelected,
                     labelType: NavigationRailLabelType.all,
                     groupAlignment: -.8,
                     destinations: [
@@ -1038,7 +1135,7 @@ class _HomeScreenState extends State<HomeScreen> {
               ? _selectionBar()
               : AppBottomNavigation(
                   selectedIndex: _tab,
-                  onDestinationSelected: _changeTab,
+                  onDestinationSelected: _onNavSelected,
                   destinations: [
                     NavigationDestination(
                       icon: Icon(Icons.explore_outlined),
@@ -1265,7 +1362,7 @@ class _HomeScreenState extends State<HomeScreen> {
                                   ))
                           ? () => _load(more: true)
                           : null,
-                      action: '加载更多',
+                      action: '重试',
                     )
                   : LayoutBuilder(
                       builder: (context, constraints) {
@@ -1279,15 +1376,7 @@ class _HomeScreenState extends State<HomeScreen> {
                             footer: Padding(
                               padding: const EdgeInsets.fromLTRB(18, 0, 18, 24),
                               child: Center(
-                                child: _loadingMore
-                                    ? const CircularProgressIndicator()
-                                    : _hasMore
-                                    ? RemoteButton(
-                                        label: '加载更多',
-                                        icon: Icons.expand_more,
-                                        onPressed: () => _load(more: true),
-                                      )
-                                    : const Text('已经看到这里的全部剧集'),
+                                child: _catalogFooter(context, remote: true),
                               ),
                             ),
                           );
@@ -1323,25 +1412,10 @@ class _HomeScreenState extends State<HomeScreen> {
                                 child: Padding(
                                   padding: const EdgeInsets.only(bottom: 24),
                                   child: Center(
-                                    child: _loadingMore
-                                        ? const CircularProgressIndicator()
-                                        : _hasMore
-                                        ? OutlinedButton.icon(
-                                            onPressed: () => _load(more: true),
-                                            icon: const Icon(
-                                              Icons.expand_more_rounded,
-                                            ),
-                                            label: const Text('加载更多'),
-                                          )
-                                        : Text(
-                                            '已经看到这里的全部剧集',
-                                            style: TextStyle(
-                                              color: Theme.of(
-                                                context,
-                                              ).colorScheme.onSurfaceVariant,
-                                              fontSize: 12,
-                                            ),
-                                          ),
+                                    child: _catalogFooter(
+                                      context,
+                                      remote: false,
+                                    ),
                                   ),
                                 ),
                               ),

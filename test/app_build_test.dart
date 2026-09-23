@@ -3,7 +3,6 @@ import 'dart:convert';
 import 'package:duanju_app/app_build.dart';
 import 'package:duanju_app/core_bridge.dart';
 import 'package:duanju_app/local_profiles.dart';
-import 'package:duanju_app/local_store.dart';
 import 'package:duanju_app/models.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -17,9 +16,10 @@ void main() {
 
   test('edition sources include DSD only in the all-source build', () async {
     SharedPreferences.setMockInitialValues({'source': 'huangdou'});
-    final store = LocalStore(await SharedPreferences.getInstance());
+    final store = testStore(await SharedPreferences.getInstance());
     expect(appSlug, allSourcesEnabled ? 'zhenguojian' : 'hongguojian');
-    expect(store.sources.length, allSourcesEnabled ? 8 : 1);
+    // 默认只显示红果与青空次元，其余站源需要密码解锁。
+    expect(store.sources.length, allSourcesEnabled ? 2 : 1);
     expect(
       SourceSite.values.any((source) => source.id == 'dsd'),
       allSourcesEnabled,
@@ -28,7 +28,11 @@ void main() {
     expect(SourceSite.isKnown('dsd'), isTrue);
     expect(SourceSite.byId('dsd').name, '帝果');
     expect(store.allowsSource('dsd'), isFalse);
-    expect(store.source, allSourcesEnabled ? 'huangdou' : 'hongguo');
+    expect(store.source, 'hongguo');
+    await store.enableSourceGate('666666');
+    expect(store.sourcesUnlocked, isTrue);
+    expect(store.sources.length, allSourcesEnabled ? 9 : 1);
+    expect(store.allowsSource('dsd'), allSourcesEnabled);
     store.dispose();
   });
 
@@ -50,7 +54,9 @@ void main() {
         'favorites': jsonEncode([red.toJson(), other.toJson()]),
         'history': jsonEncode(history),
       });
-      final store = LocalStore(await SharedPreferences.getInstance());
+      final store = testStore(await SharedPreferences.getInstance());
+      // 管理员默认可见全部站源；这里仍显式启用密码锁，验证启用后行为一致。
+      await store.enableSourceGate('666666');
       expect(store.favorites.length, allSourcesEnabled ? 2 : 1);
       expect(store.history.length, allSourcesEnabled ? 2 : 1);
       expect(store.isFavorite(other.id), allSourcesEnabled);
@@ -75,6 +81,7 @@ void main() {
     'a restored foreign-source profile keeps its identity and permissions',
     () async {
       SharedPreferences.setMockInitialValues({
+        ...await gatePreferences(),
         'profiles': jsonEncode([
           LocalProfile(
             id: 'default',
@@ -93,7 +100,8 @@ void main() {
         'activeProfile': 'viewer',
         'profile.viewer.source': 'huangdou',
       });
-      final store = LocalStore(await SharedPreferences.getInstance());
+      final store = testStore(await SharedPreferences.getInstance());
+      await unlockGate(store);
       expect(store.profile.id, 'viewer');
       expect(store.profile.admin, isFalse);
       expect(store.profile.sources, ['huangdou']);
@@ -107,6 +115,7 @@ void main() {
 
   test('restored DSD profile data follows edition availability', () async {
     SharedPreferences.setMockInitialValues({
+      ...await gatePreferences(),
       'profiles': jsonEncode([
         LocalProfile(
           id: 'default',
@@ -125,7 +134,8 @@ void main() {
       'activeProfile': 'viewer',
       'profile.viewer.source': 'dsd',
     });
-    final store = LocalStore(await SharedPreferences.getInstance());
+    final store = testStore(await SharedPreferences.getInstance());
+    await unlockGate(store);
     expect(store.configurationError, isNull);
     expect(store.profile.sources, ['dsd']);
     expect(

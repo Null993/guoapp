@@ -31,6 +31,10 @@ class LocalSnapshot {
     'themeMode',
     'autoExport',
     'exportPosters',
+    'sourceGateEnabled',
+    'sourceGateOff',
+    'sourceGateSalt',
+    'sourceGateHash',
   };
   final SharedPreferences preferences;
   Map<String, Object> _values = {};
@@ -74,6 +78,8 @@ class LocalSnapshot {
         'hideVip',
         'autoExport',
         'exportPosters',
+        'sourceGateEnabled',
+        'sourceGateOff',
       }.contains(entry.key.split('.').last);
       if (!owns(entry.key) ||
           (boolean ? entry.value is! bool : entry.value is! String)) {
