@@ -1,0 +1,51 @@
+name: 格式修复（手动触发）
+
+# 用途：本机没有 Dart 工具链时，用它取回 dart format 的权威结果。
+# 只在手动触发时运行，不会随 push / PR 自动执行，不影响正常构建。
+#
+# 产出（artifact: formatted）：
+#   changed_files.txt —— 被格式化的文件清单（相对路径，每行一个）
+#   lib / test / integration_test / test_driver —— 格式化后的源码
+# 配套脚本：tools/sync_source_to_repo.py --fix-format
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  format:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: '3.47.4'
+          channel: stable
+          cache: true
+      # 必须先解析依赖：否则语言版本未确定，dart format 会误报大量文件
+      - run: flutter pub get --enforce-lockfile
+      - name: 格式化并记录改动清单
+        run: |
+          set -uo pipefail
+          dart --version
+          dart format lib test integration_test test_driver || true
+          echo "===== 改动统计 ====="
+          git --no-pager diff --stat || true
+          git --no-pager diff --name-only > changed_files.txt || true
+          echo "===== 改动清单 ====="
+          cat changed_files.txt
+          if [ ! -s changed_files.txt ]; then echo "（无需格式化）"; fi
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: formatted
+          path: |
+            changed_files.txt
+            lib/**
+            test/**
+            integration_test/**
+            test_driver/**
+          retention-days: 1
