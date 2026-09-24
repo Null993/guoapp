@@ -70,7 +70,7 @@ void main() {
     tester.view.padding = const FakeViewPadding(bottom: 34);
     addTearDown(tester.view.reset);
     SharedPreferences.setMockInitialValues({});
-    final store = LocalStore(await SharedPreferences.getInstance());
+    final store = testStore(await SharedPreferences.getInstance());
     await tester.pumpWidget(
       MaterialApp(
         home: SourcesScreen(
