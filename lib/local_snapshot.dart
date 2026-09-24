@@ -36,6 +36,7 @@ class LocalSnapshot {
     'sourceGateOff',
     'sourceGateSalt',
     'sourceGateHash',
+    'forceLogin',
   };
   final SharedPreferences preferences;
   Map<String, Object> _values = {};
@@ -81,6 +82,7 @@ class LocalSnapshot {
         'exportPosters',
         'sourceGateEnabled',
         'sourceGateOff',
+        'forceLogin',
       }.contains(entry.key.split('.').last);
       if (!owns(entry.key) ||
           (boolean ? entry.value is! bool : entry.value is! String)) {

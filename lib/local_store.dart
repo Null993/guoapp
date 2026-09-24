@@ -70,7 +70,7 @@ class LocalStore extends ChangeNotifier {
         _current = _profiles.firstWhere((profile) => profile.admin).id;
       }
       _configurationError = null;
-      _locked = profile.protected;
+      _locked = forceLogin && profile.protected;
       _loadSourceGate();
       _loadLibrary();
     } catch (_) {
@@ -125,6 +125,11 @@ class LocalStore extends ChangeNotifier {
       _profiles.firstWhere((profile) => profile.id == _current);
   bool get locked => _locked || _configurationError != null;
   int get profileEpoch => _epoch;
+  bool get forceLogin {
+    if (_configurationError != null) return true;
+    final admin = _profiles.firstWhere((profile) => profile.admin);
+    return _bool('forceLogin') ?? admin.protected;
+  }
   bool get canDownload => !locked && (profile.admin || profile.download);
   bool allowsSource(String source) =>
       !locked &&
@@ -519,6 +524,8 @@ class LocalStore extends ChangeNotifier {
       _setting('exportPosters', value, admin: true);
   Future<void> setAutoExport(bool value) =>
       _setting('autoExport', value, admin: true);
+  Future<void> setForceLogin(bool value) =>
+      _setting('forceLogin', value, admin: true);
   Future<void> setHideVip(bool value) => _setting(_key('hideVip'), value);
   Future<void> setSource(String value) {
     if (!allowsSource(value)) return Future.error(StateError('当前用户没有此站源权限'));
@@ -981,6 +988,7 @@ class LocalStore extends ChangeNotifier {
       'themeMode': themeMode,
       'autoExport': autoExport,
       'exportPosters': exportPosters,
+      'forceLogin': forceLogin,
       'libraries': {
         for (final profile in _profiles)
           profile.id: {
@@ -1032,6 +1040,9 @@ class LocalStore extends ChangeNotifier {
     if (data.containsKey('themeMode') &&
         !{'light', 'dark', 'system'}.contains(data['themeMode'])) {
       throw const FormatException('备份主题设置无效');
+    }
+    if (data.containsKey('forceLogin') && data['forceLogin'] is! bool) {
+      throw const FormatException('备份登录设置无效');
     }
     final libraries = data['libraries'] as Map;
     for (final profile in profiles) {
@@ -1104,6 +1115,9 @@ class LocalStore extends ChangeNotifier {
       'themeMode': data['themeMode'] as String? ?? themeMode,
       'autoExport': data['autoExport'] == true,
       'exportPosters': data['exportPosters'] == true,
+      'forceLogin': data['forceLogin'] is bool
+          ? data['forceLogin'] as bool
+          : profiles.firstWhere((profile) => profile.admin).protected,
     };
     final libraries = data['libraries'] as Map;
     for (final profile in profiles) {
@@ -1143,7 +1157,7 @@ class LocalStore extends ChangeNotifier {
     _profiles = profiles;
     _current = profiles.firstWhere((profile) => profile.admin).id;
     _configurationError = null;
-    _locked = profile.protected;
+    _locked = forceLogin && profile.protected;
     _loadSourceGate();
     _loadLibrary();
     _epoch++;
