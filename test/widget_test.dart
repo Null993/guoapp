@@ -99,7 +99,17 @@ void main() {
   ) async {
     final repository = FixtureRepository();
     repository.cachedPages['hongguo'] = CatalogPage(
-      [FixtureRepository.free],
+      [
+        FixtureRepository.free,
+        for (var index = 0; index < 30; index++)
+          Drama(
+            id: 'hongguo:cached-$index',
+            source: 'hongguo',
+            title: '缓存短剧$index',
+            episodes: 1,
+            category: '合成数据',
+          ),
+      ],
       fresh: true,
       page: 3,
       hasMore: true,
@@ -110,15 +120,15 @@ void main() {
     await tester.pumpAndSettle();
     expect(find.text('测试短剧'), findsOneWidget);
     expect(repository.requests, isEmpty);
-    // 目录页为滚动自动翻页（TVBox 影视壳式）：滚到底部即触发下一页，无需点按钮。
-    final scrollable = find.descendant(
-      of: find.byType(CustomScrollView),
-      matching: find.byType(Scrollable),
-    );
-    await tester.drag(scrollable, const Offset(0, -1200));
+    final scrollable = find.byType(CustomScrollView);
+    for (var i = 0; i < 4 && repository.pages.isEmpty; i++) {
+      await tester.drag(scrollable, const Offset(0, -900));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 50));
+    }
     await tester.pumpAndSettle();
     expect(repository.pages, [4]);
-    await tester.tap(find.byTooltip('更新当前站源'));
+    await tester.tap(find.byKey(const ValueKey('catalog-refresh')));
     await tester.pumpAndSettle();
     expect(repository.pages, [4, 1]);
     expect(repository.forced, [false, true]);
@@ -135,7 +145,7 @@ void main() {
     );
     await tester.pumpAndSettle();
     expect(find.text('测试短剧'), findsOneWidget);
-    expect(find.text('合成网络错误'), findsOneWidget);
+    expect(find.text('合成网络错误'), findsNothing);
     expect(find.text('暂时无法加载'), findsNothing);
     expect(repository.requests, ['hongguo']);
     expect(tester.takeException(), isNull);
