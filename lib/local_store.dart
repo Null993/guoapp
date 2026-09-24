@@ -130,6 +130,7 @@ class LocalStore extends ChangeNotifier {
     final admin = _profiles.firstWhere((profile) => profile.admin);
     return _bool('forceLogin') ?? admin.protected;
   }
+
   bool get canDownload => !locked && (profile.admin || profile.download);
   bool allowsSource(String source) =>
       !locked &&
