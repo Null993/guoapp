@@ -33,6 +33,8 @@ type Config struct {
 	DSDURL           string
 	SoraniURL        string
 	SoraniAPIURL     string
+	GuipianURL       string
+	HanxiaoquanURL   string
 	Token            string
 	AESKeyHex        string
 	InterfaceKey     string
@@ -547,6 +549,28 @@ func (engine *nativeEngine) nativeCatalog(ctx context.Context, input nativeInput
 		result.HasMore = more
 		return result, nil
 	}
+	if query != "" && source == sourceGuipian {
+		items, more, err := d.fetchGuipianCatalogPage(ctx, page, "", query)
+		if err != nil {
+			return result, err
+		}
+		for _, drama := range items {
+			result.Items = append(result.Items, nativeNormalize(drama))
+		}
+		result.HasMore = more
+		return result, nil
+	}
+	if query != "" && source == sourceHanxiaoquan {
+		items, more, err := d.fetchHanxiaoquanCatalogPage(ctx, page, "", query)
+		if err != nil {
+			return result, err
+		}
+		for _, drama := range items {
+			result.Items = append(result.Items, nativeNormalize(drama))
+		}
+		result.HasMore = more
+		return result, nil
+	}
 	if query != "" && (source == sourceYeguo || source == sourceDSD) {
 		var items []Drama
 		var more bool
@@ -639,6 +663,10 @@ func (engine *nativeEngine) nativeCatalog(ctx context.Context, input nativeInput
 		items, result.HasMore, err = d.fetchDSDCatalogPage(ctx, page, category, "")
 	case sourceSorani:
 		items, result.HasMore, err = d.fetchSoraniCatalogPage(ctx, page, category, "")
+	case sourceGuipian:
+		items, result.HasMore, err = d.fetchGuipianCatalogPage(ctx, page, category, "")
+	case sourceHanxiaoquan:
+		items, result.HasMore, err = d.fetchHanxiaoquanCatalogPage(ctx, page, category, "")
 	case sourceHuangguoVideo:
 		address := fmt.Sprintf("%s/videos?page=%d", d.providerBaseURL(source), page)
 		if category != "" {
@@ -656,7 +684,7 @@ func (engine *nativeEngine) nativeCatalog(ctx context.Context, input nativeInput
 	if err != nil && len(items) == 0 {
 		return result, err
 	}
-	if len(items) == 0 && page == 1 && source != sourceHuangju && source != sourceYeguo && source != sourceDSD && source != sourceSorani {
+	if len(items) == 0 && page == 1 && source != sourceHuangju && source != sourceYeguo && source != sourceDSD && source != sourceSorani && source != sourceGuipian && source != sourceHanxiaoquan {
 		return result, errors.New("站源暂未返回剧集，请稍后刷新")
 	}
 	if err != nil {
@@ -698,6 +726,10 @@ func (engine *nativeEngine) nativeDetail(ctx context.Context, drama nativeDrama)
 		raw, chapters, err = engine.downloader.fetchDSDDetail(ctx, sourceID)
 	case sourceSorani:
 		raw, chapters, err = engine.downloader.fetchSoraniDetail(ctx, sourceID)
+	case sourceGuipian:
+		raw, chapters, err = engine.downloader.fetchGuipianDetail(ctx, sourceID)
+	case sourceHanxiaoquan:
+		raw, chapters, err = engine.downloader.fetchHanxiaoquanDetail(ctx, sourceID)
 	default:
 		title, chapters, err = engine.downloader.GetHuangguoChapters(ctx, source, sourceID)
 	}
