@@ -444,9 +444,9 @@ class _TelevisionControlsState extends State<TelevisionControls> {
                             ),
                             if (widget.onExternalPlayer != null)
                               RemoteButton(
-                                key: const ValueKey('tv-external-ex-player'),
-                                label: 'EX播放器',
-                                icon: Icons.open_in_new_rounded,
+                                key: const ValueKey('tv-native-ex-player'),
+                                label: '内置Exo内核',
+                                icon: Icons.bolt_rounded,
                                 onPressed: widget.onExternalPlayer,
                               ),
                           ],

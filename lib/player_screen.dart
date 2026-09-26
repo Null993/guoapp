@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:convert';
 import 'dart:io';
 
 import 'package:flutter/material.dart';
@@ -1440,15 +1441,47 @@ class _PlayerScreenState extends State<PlayerScreen>
     }
   }
 
-  void _openExternalPlayer() {
+  Future<void> _openNativeExoPlayer() async {
     final url = _plan?.url;
     if (url == null || url.isEmpty) {
-      _interactions.hint('当前播放地址无效');
+      _interactions.hint('当前播放地址未就绪，请稍候');
       return;
     }
-    _player.pause();
-    final title = '${widget.detail.drama.title} · 第 ${widget.detail.episodes[_index].number} 集';
-    AppDevice.openExternalPlayer(url, title: title);
+    await _player.pause();
+    final dramaTitle = widget.detail.drama.title;
+    final ep = widget.detail.episodes[_index];
+    final episodeTitle = '第 ${ep.number} 集';
+    final currentPos = _player.state.position.inMilliseconds / 1000.0;
+
+    final episodesList = widget.detail.episodes.asMap().entries.map((entry) {
+      final idx = entry.key;
+      final item = entry.value;
+      return {
+        'index': idx,
+        'number': item.number,
+        'title': '第 ${item.number} 集',
+        'url': idx == _index ? url : '',
+      };
+    }).toList();
+
+    final result = await AppDevice.openNativeExoPlayer(
+      url: url,
+      title: dramaTitle,
+      episodeTitle: episodeTitle,
+      index: _index,
+      positionSeconds: currentPos,
+      episodesJson: jsonEncode(episodesList),
+    );
+
+    if (result != null && mounted && !_closed) {
+      final newIndex = (result['index'] as num?)?.toInt() ?? _index;
+      final newPosMs = (result['position'] as num?)?.toDouble() ?? 0.0;
+      if (newIndex != _index) {
+        await _play(newIndex, position: newPosMs / 1000.0);
+      } else if (newPosMs > 0) {
+        await _seekTo(newPosMs / 1000.0);
+      }
+    }
   }
 
   @override
@@ -1663,7 +1696,7 @@ class _PlayerScreenState extends State<PlayerScreen>
                 : null,
             onEpisodes: () => _televisionEpisodes(context),
             onSettings: () => _televisionSettings(context),
-            onExternalPlayer: _openExternalPlayer,
+            onExternalPlayer: _openNativeExoPlayer,
             onBack: _back,
           )
         : PlayerControls(

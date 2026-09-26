@@ -26,10 +26,14 @@ import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.plugin.common.MethodChannel
 
 class MainActivity : FlutterActivity() {
+    companion object {
+        private const val REQUEST_CODE_EXO_PLAYER = 2001
+    }
     private var headroomReadAt = 0L
     private var thermalHeadroom: Double? = null
     private var deviceChannel: MethodChannel? = null
     private var televisionMode = false
+    private var exoPlayerResult: MethodChannel.Result? = null
 
     @Suppress("DEPRECATION")
     private fun isTelevisionDevice(): Boolean {
@@ -223,10 +227,50 @@ class MainActivity : FlutterActivity() {
                                 result.error("invalid_url", "播放地址为空", null)
                             }
                         }
+                        "openNativeExoPlayer" -> {
+                            val url = call.argument<String>("url")
+                            val title = call.argument<String>("title") ?: "短剧"
+                            val episodeTitle = call.argument<String>("episodeTitle") ?: "第 1 集"
+                            val index = call.argument<Int>("index") ?: 0
+                            val position = (call.argument<Number>("position")?.toLong() ?: 0L)
+                            val episodes = call.argument<String>("episodes")
+
+                            try {
+                                val intent = Intent(this, ExoPlayerActivity::class.java).apply {
+                                    putExtra("url", url)
+                                    putExtra("title", title)
+                                    putExtra("episodeTitle", episodeTitle)
+                                    putExtra("index", index)
+                                    putExtra("position", position)
+                                    if (!episodes.isNullOrEmpty()) {
+                                        putExtra("episodes", episodes)
+                                    }
+                                }
+                                exoPlayerResult = result
+                                startActivityForResult(intent, REQUEST_CODE_EXO_PLAYER)
+                            } catch (e: Exception) {
+                                result.error("exo_player_failed", "启动内置ExoPlayer失败: ${e.message}", null)
+                            }
+                        }
                         else -> result.notImplemented()
                     }
                 }
             }
+    }
+
+    override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
+        super.onActivityResult(requestCode, resultCode, data)
+        if (requestCode == REQUEST_CODE_EXO_PLAYER) {
+            val index = data?.getIntExtra("index", 0) ?: 0
+            val position = data?.getLongExtra("position", 0L) ?: 0L
+            val duration = data?.getLongExtra("duration", 0L) ?: 0L
+            exoPlayerResult?.success(mapOf(
+                "index" to index,
+                "position" to position,
+                "duration" to duration
+            ))
+            exoPlayerResult = null
+        }
     }
 
     private fun pictureInPictureSupported(): Boolean {
