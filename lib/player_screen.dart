@@ -13,6 +13,7 @@ import 'app_layout.dart';
 import 'app_orientation.dart';
 import 'app_theme.dart';
 import 'core_bridge.dart';
+import 'diary_service.dart';
 import 'luna_exo_player.dart';
 import 'danmaku_controller.dart';
 import 'danmaku_overlay.dart';
@@ -1044,6 +1045,7 @@ class _PlayerScreenState extends State<PlayerScreen>
         _plan = plan;
         installed = true;
         _acceptErrors = true;
+        DiaryService.add('[Play] 调用 _player.open: url=${plan.url}, headers=${plan.headers.keys.toList()}');
         await _player.open(
           Media(
             plan.url,
@@ -1073,6 +1075,7 @@ class _PlayerScreenState extends State<PlayerScreen>
         }
       });
     } catch (error) {
+      DiaryService.add('[Play] 捕获播放流程错误: $error');
       if (!_closed && mounted && ticket == _generation) {
         if (prepared != null && identical(_plan, prepared)) {
           _acceptErrors = true;
@@ -1758,21 +1761,33 @@ class _PlayerScreenState extends State<PlayerScreen>
                     message: _error!,
                     onRetry: () => _retry(),
                     action: _localFailure ? '重试本地播放' : '重试播放',
-                    secondaryAction: _localFailure && widget.allowOnlineFallback
-                        ? TextButton.icon(
+                    secondaryAction: Wrap(
+                      spacing: 12,
+                      runSpacing: 10,
+                      alignment: WrapAlignment.center,
+                      crossAxisAlignment: WrapCrossAlignment.center,
+                      children: [
+                        FilledButton.tonalIcon(
+                          onPressed: () => DiaryService.showDiaryDialog(context),
+                          icon: const Icon(Icons.receipt_long_rounded),
+                          label: const Text('查看播放日记'),
+                        ),
+                        if (_localFailure && widget.allowOnlineFallback)
+                          TextButton.icon(
                             onPressed: _switchOnline,
                             icon: const Icon(Icons.cloud_outlined),
                             label: const Text('改为在线播放'),
                           )
-                        : !_localFailure &&
+                        else if (!_localFailure &&
                               !widget.localOnly &&
-                              widget.repository.supportsSourceManagement
-                        ? SourceDiagnosticsButton(
+                              widget.repository.supportsSourceManagement)
+                          SourceDiagnosticsButton(
                             repository: widget.repository,
                             store: widget.store,
                             drama: widget.detail.drama,
-                          )
-                        : null,
+                          ),
+                      ],
+                    ),
                     icon: Icons.play_disabled_rounded,
                   ),
                 ),

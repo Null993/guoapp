@@ -6,6 +6,7 @@ import 'package:media_kit/src/models/player_log.dart';
 import 'package:media_kit/src/models/player_stream.dart';
 import 'package:media_kit/src/player/platform_player.dart';
 import 'package:video_player/video_player.dart';
+import 'diary_service.dart';
 
 /// 模拟与 media_kit.PlayerStream 接口对齐的流集合
 class LunaPlayerStreams implements PlayerStream {
@@ -159,10 +160,13 @@ class LunaExoPlayer implements Player {
         (headers['accept']?.contains('mpegurl') ?? false);
     final formatHint = isHls ? VideoFormat.hls : null;
 
+    DiaryService.add('[ExoPlayer] open(gen=$myGen): url=$url, isHls=$isHls, formatHint=$formatHint, headers=${headers.keys.toList()}');
+
     VideoPlayerController c;
     final uri = Uri.tryParse(url);
     if (url.startsWith('/') || (uri != null && uri.scheme == 'file')) {
       final filePath = uri != null && uri.scheme == 'file' ? uri.toFilePath() : url;
+      DiaryService.add('[ExoPlayer] 本地文件播放: $filePath');
       c = VideoPlayerController.file(
         File(filePath),
         videoPlayerOptions: VideoPlayerOptions(mixWithOthers: true),
@@ -175,12 +179,17 @@ class LunaExoPlayer implements Player {
         videoPlayerOptions: VideoPlayerOptions(mixWithOthers: true),
       );
     } else {
+      DiaryService.add('[ExoPlayer] 错误: 无效的播放地址 $url');
       throw Exception('无效的播放地址: $url');
     }
 
     try {
+      DiaryService.add('[ExoPlayer] c.initialize() 开始...');
       await c.initialize();
-    } catch (e) {
+      DiaryService.add(
+          '[ExoPlayer] c.initialize() 成功! duration=${c.value.duration}, size=${c.value.size}, isInitialized=${c.value.isInitialized}');
+    } catch (e, stack) {
+      DiaryService.add('[ExoPlayer] c.initialize() 失败! 异常: $e\n堆栈: $stack');
       if (myGen == _openGeneration) {
         _safeAdd(stream.errorController, e.toString());
       }
@@ -273,14 +282,19 @@ class LunaExoPlayer implements Player {
 
     bool stateChanged = false;
     if (v.isPlaying != state.playing) {
+      DiaryService.add('[ExoPlayer] isPlaying 变为: ${v.isPlaying}');
       state = state.copyWith(playing: v.isPlaying);
       _safeAdd(stream.playingController, v.isPlaying);
       stateChanged = true;
     }
     if (v.isBuffering != state.buffering) {
+      DiaryService.add('[ExoPlayer] isBuffering 变为: ${v.isBuffering}');
       state = state.copyWith(buffering: v.isBuffering);
       _safeAdd(stream.bufferingController, v.isBuffering);
       stateChanged = true;
+    }
+    if (v.hasError) {
+      DiaryService.add('[ExoPlayer] controller error: ${v.errorDescription}');
     }
     final dur = v.duration;
     if (dur > Duration.zero && dur != state.duration) {

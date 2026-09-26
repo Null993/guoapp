@@ -7,6 +7,7 @@ import 'episode_browser.dart';
 import 'playback_preferences.dart';
 import 'video_enhancement.dart';
 import 'video_enhancement_settings.dart';
+import 'diary_service.dart';
 
 enum PlayerMenuSection { episodes, speed, quality, settings }
 
@@ -302,6 +303,13 @@ class _PlayerMenuState extends State<PlayerMenu> {
                   : Icons.bookmark_border_rounded,
             ),
             label: Text(widget.favorite ? '取消追剧' : '加入追剧'),
+          ),
+          const SizedBox(height: 12),
+          OutlinedButton.icon(
+            key: const ValueKey('player-diary-btn'),
+            onPressed: () => DiaryService.showDiaryDialog(context),
+            icon: const Icon(Icons.receipt_long_rounded),
+            label: const Text('查看播放调试日记'),
           ),
           const SizedBox(height: 20),
           Text(
