@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:media_kit/media_kit.dart';
 import 'package:media_kit/src/models/player_log.dart';
@@ -140,18 +141,42 @@ class LunaExoPlayer implements Player {
     state = state.copyWith(completed: false);
     _safeAdd(stream.completedController, false);
 
-    Map<String, String> headers = const <String, String>{};
+    final Map<String, String> headers = <String, String>{};
     try {
       if (media.httpHeaders != null) {
-        headers = Map<String, String>.from(media.httpHeaders!);
+        headers.addAll(Map<String, String>.from(media.httpHeaders!));
       }
     } catch (_) {}
 
-    final c = VideoPlayerController.networkUrl(
-      Uri.parse(url),
-      httpHeaders: headers,
-      videoPlayerOptions: VideoPlayerOptions(mixWithOthers: true),
-    );
+    // 针对防盗链 CDN 注入标准移动端 UA
+    if (!headers.keys.any((k) => k.toLowerCase() == 'user-agent')) {
+      headers['User-Agent'] =
+          'Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36';
+    }
+
+    final isHls = url.toLowerCase().contains('.m3u8') ||
+        url.toLowerCase().contains('hls') ||
+        (headers['accept']?.contains('mpegurl') ?? false);
+    final formatHint = isHls ? VideoFormat.hls : null;
+
+    VideoPlayerController c;
+    final uri = Uri.tryParse(url);
+    if (url.startsWith('/') || (uri != null && uri.scheme == 'file')) {
+      final filePath = uri != null && uri.scheme == 'file' ? uri.toFilePath() : url;
+      c = VideoPlayerController.file(
+        File(filePath),
+        videoPlayerOptions: VideoPlayerOptions(mixWithOthers: true),
+      );
+    } else if (uri != null) {
+      c = VideoPlayerController.networkUrl(
+        uri,
+        formatHint: formatHint,
+        httpHeaders: headers,
+        videoPlayerOptions: VideoPlayerOptions(mixWithOthers: true),
+      );
+    } else {
+      throw Exception('无效的播放地址: $url');
+    }
 
     try {
       await c.initialize();
@@ -162,7 +187,7 @@ class LunaExoPlayer implements Player {
       try {
         await c.dispose();
       } catch (_) {}
-      return;
+      rethrow;
     }
 
     if (_disposed || myGen != _openGeneration) {
@@ -194,7 +219,7 @@ class LunaExoPlayer implements Player {
     state = state.copyWith(
       duration: dur,
       position: Duration.zero,
-      playing: c.value.isPlaying,
+      playing: play,
       buffering: c.value.isBuffering,
       width: w > 0 ? w : 1920,
       height: h > 0 ? h : 1080,
@@ -203,7 +228,7 @@ class LunaExoPlayer implements Player {
 
     _safeAdd(stream.durationController, dur);
     _safeAdd(stream.positionController, Duration.zero);
-    _safeAdd(stream.playingController, c.value.isPlaying);
+    _safeAdd(stream.playingController, play);
     _safeAdd(stream.bufferingController, c.value.isBuffering);
     _safeAdd(stream.videoParamsController, videoParams);
 
