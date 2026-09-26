@@ -188,15 +188,8 @@ class _PlayerControlsState extends State<PlayerControls> {
   void _tap() {
     if (widget.interactions.suppressTap) return;
     widget.onFocusSurface();
-    if (widget.swipeEnabled &&
-        MediaQuery.orientationOf(context) == Orientation.portrait &&
-        widget.enabled) {
-      widget.onTogglePlayback();
-      _show();
-    } else {
-      setState(() => _visible = !_visible);
-      _scheduleHide();
-    }
+    setState(() => _visible = !_visible);
+    _scheduleHide();
   }
 
   Future<void> _panel(Future<void> Function() open) async {
