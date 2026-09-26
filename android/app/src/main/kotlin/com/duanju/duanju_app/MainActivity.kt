@@ -20,6 +20,8 @@ import android.net.ConnectivityManager
 import android.net.Uri
 import android.util.Rational
 import android.view.InputDevice
+import android.view.WindowManager
+import android.provider.Settings
 import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.plugin.common.MethodChannel
 
@@ -166,6 +168,40 @@ class MainActivity : FlutterActivity() {
                                 call.argument<Int>("right"),
                                 call.argument<Int>("bottom")
                             ))
+                        }
+                        "getBrightness" -> {
+                            val lp = window.attributes
+                            val current = if (lp.screenBrightness >= 0f) {
+                                lp.screenBrightness.toDouble()
+                            } else {
+                                try {
+                                    val sys = Settings.System.getInt(
+                                        contentResolver,
+                                        Settings.System.SCREEN_BRIGHTNESS
+                                    )
+                                    (sys / 255.0).coerceIn(0.0, 1.0)
+                                } catch (e: Exception) {
+                                    0.5
+                                }
+                            }
+                            result.success(current)
+                        }
+                        "setBrightness" -> {
+                            val value = call.argument<Double>("brightness")?.toFloat()
+                            if (value != null) {
+                                val lp = window.attributes
+                                lp.screenBrightness = value.coerceIn(0.01f, 1.0f)
+                                window.attributes = lp
+                                result.success(true)
+                            } else {
+                                result.error("invalid_arg", "缺少亮度数值", null)
+                            }
+                        }
+                        "resetBrightness" -> {
+                            val lp = window.attributes
+                            lp.screenBrightness = WindowManager.LayoutParams.BRIGHTNESS_OVERRIDE_NONE
+                            window.attributes = lp
+                            result.success(true)
                         }
                         else -> result.notImplemented()
                     }

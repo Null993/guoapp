@@ -6,7 +6,19 @@ import 'package:flutter/services.dart';
 import 'package:flutter/widgets.dart';
 import 'package:media_kit/media_kit.dart';
 
+import 'app_layout.dart';
 import 'widgets.dart';
+
+enum SwipeAction { none, brightness, volume, episode }
+
+class GestureHudState {
+  const GestureHudState({
+    this.type = SwipeAction.none,
+    this.value = 0.0,
+  });
+  final SwipeAction type;
+  final double value; // 0.0 ~ 1.0
+}
 
 class PlayerInteractions extends ChangeNotifier {
   PlayerInteractions({
@@ -50,7 +62,15 @@ class PlayerInteractions extends ChangeNotifier {
   double _unmutedVolume = 100;
   String _feedback = '';
   DateTime _ignoreTapUntil = DateTime(2000);
+  SwipeAction _swipeAction = SwipeAction.none;
+  GestureHudState _hudState = const GestureHudState();
+  double _initialBrightness = 0.5;
+  double _initialVolume = 100.0;
+  double _viewWidth = 0.0;
+  double _viewHeight = 0.0;
+  Timer? _hudTimer;
 
+  GestureHudState get hudState => _hudState;
   String get feedback => _feedback;
   bool get boosting => _boosting;
   bool get suppressTap => DateTime.now().isBefore(_ignoreTapUntil);
@@ -133,6 +153,7 @@ class PlayerInteractions extends ChangeNotifier {
   void pointerDown(
     PointerDownEvent event, {
     required bool swipeEnabled,
+    double width = 0.0,
     required double height,
   }) {
     _pointers.add(event.pointer);
@@ -145,17 +166,54 @@ class PlayerInteractions extends ChangeNotifier {
     _origin = _lastPosition = event.localPosition;
     _started = event.timeStamp;
     _swipeEnabled = swipeEnabled && event.kind == PointerDeviceKind.touch;
-    _swipeThreshold = math.max(56, math.min(100, height * .1));
+    _swipeThreshold = math.max(30, math.min(80, height * .08));
+    _viewWidth = width;
+    _viewHeight = height;
     _moved = _held = false;
+    _swipeAction = SwipeAction.none;
+
+    if (_swipeEnabled && width > 0) {
+      // 判定触摸落点：
+      // 左侧 40% 区域 -> 亮度调节（类似西瓜视频）
+      // 右侧 40% 区域 -> 音量调节（类似西瓜视频）
+      // 中间 20% 区域 -> 上下刷剧切换集数
+      if (event.localPosition.dx < width * 0.4) {
+        _swipeAction = SwipeAction.brightness;
+        AppDevice.getBrightness().then((val) {
+          if (_pointer == event.pointer) _initialBrightness = val;
+        });
+      } else if (event.localPosition.dx > width * 0.6) {
+        _swipeAction = SwipeAction.volume;
+        _initialVolume = player.state.volume;
+      } else {
+        _swipeAction = SwipeAction.episode;
+      }
+    }
     _beginHold();
   }
 
   void pointerMove(PointerMoveEvent event) {
     if (_pointer != event.pointer || _origin == null) return;
     _lastPosition = event.localPosition;
-    if ((event.localPosition - _origin!).distance > 12) {
+    final diff = event.localPosition - _origin!;
+    if (diff.distance > 12) {
       _moved = true;
       _endHold();
+    }
+    if (!_swipeEnabled || !_moved || _viewHeight <= 0) return;
+
+    final dy = _origin!.dy - event.localPosition.dy; // 向上滑动为增加，向下滑动为减少
+    final deltaRatio = dy / (_viewHeight * 0.6);
+
+    if (_swipeAction == SwipeAction.brightness) {
+      final newBrightness = (_initialBrightness + deltaRatio).clamp(0.01, 1.0);
+      AppDevice.setBrightness(newBrightness);
+      _showHud(SwipeAction.brightness, newBrightness);
+    } else if (_swipeAction == SwipeAction.volume) {
+      final newVolume = (_initialVolume + deltaRatio * 100).clamp(0.0, 100.0);
+      player.setVolume(newVolume);
+      if (newVolume > 0) _unmutedVolume = newVolume;
+      _showHud(SwipeAction.volume, newVolume / 100.0);
     }
   }
 
@@ -168,20 +226,25 @@ class PlayerInteractions extends ChangeNotifier {
     }
     if (_pointer != event.pointer || _origin == null) return;
     final delta = (_lastPosition ?? event.localPosition) - _origin!;
-    final swipe =
+    final isVertical = delta.dy.abs() >= _swipeThreshold && delta.dy.abs() > delta.dx.abs() * 1.5;
+
+    if (_swipeAction == SwipeAction.episode &&
         _swipeEnabled &&
         !_held &&
         _moved &&
-        delta.dy.abs() >= _swipeThreshold &&
-        delta.dy.abs() > delta.dx.abs() * 1.5 &&
-        event.timeStamp - _started < const Duration(milliseconds: 1500);
+        isVertical &&
+        event.timeStamp - _started < const Duration(milliseconds: 1500)) {
+      if (available()) hint(onEpisode(delta.dy < 0 ? 1 : -1));
+    } else if (_swipeAction == SwipeAction.brightness || _swipeAction == SwipeAction.volume) {
+      _scheduleDismissHud();
+    }
+
     if (_moved || _held) {
       _ignoreTapUntil = DateTime.now().add(const Duration(milliseconds: 600));
     }
     _pointer = null;
     _origin = null;
     _endHold();
-    if (swipe && available()) hint(onEpisode(delta.dy < 0 ? 1 : -1));
   }
 
   void pointerCancel(PointerCancelEvent event) {
@@ -189,6 +252,22 @@ class PlayerInteractions extends ChangeNotifier {
     cancel();
     _ignoreTapUntil = DateTime.now().add(const Duration(milliseconds: 600));
     if (_pointers.isEmpty) _cancelUntilRelease = false;
+  }
+
+  void _showHud(SwipeAction action, double value) {
+    if (_disposed) return;
+    _hudTimer?.cancel();
+    _hudState = GestureHudState(type: action, value: value);
+    notifyListeners();
+  }
+
+  void _scheduleDismissHud() {
+    _hudTimer?.cancel();
+    _hudTimer = Timer(const Duration(milliseconds: 1000), () {
+      if (_disposed) return;
+      _hudState = const GestureHudState();
+      notifyListeners();
+    });
   }
 
   void seek(int seconds) {
@@ -273,6 +352,8 @@ class PlayerInteractions extends ChangeNotifier {
     _disposed = true;
     _holdTimer?.cancel();
     _hintTimer?.cancel();
+    _hudTimer?.cancel();
+    AppDevice.resetBrightness(); // 离开播放器时自动恢复手机/平板系统默认亮度
     if (_boosting) unawaited(_setRate(baseSpeed()));
     _boosting = false;
     _playing.cancel();
