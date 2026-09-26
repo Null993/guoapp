@@ -13,6 +13,7 @@ import 'app_layout.dart';
 import 'app_orientation.dart';
 import 'app_theme.dart';
 import 'core_bridge.dart';
+import 'luna_exo_player.dart';
 import 'danmaku_controller.dart';
 import 'danmaku_overlay.dart';
 import 'download_picker.dart';
@@ -180,13 +181,15 @@ class _PlayerScreenState extends State<PlayerScreen>
     widget.store.addListener(_accessChanged);
     _player =
         widget.playerFactory?.call() ??
-        Player(
-          configuration: PlayerConfiguration(
-            bufferSize: Platform.isAndroid ? 8 * 1024 * 1024 : 32 * 1024 * 1024,
-            logLevel: MPVLogLevel.error,
-          ),
-        );
-    _video = widget.videoBuilder == null
+        (Platform.isAndroid
+            ? LunaExoPlayer()
+            : Player(
+                configuration: const PlayerConfiguration(
+                  bufferSize: 32 * 1024 * 1024,
+                  logLevel: MPVLogLevel.error,
+                ),
+              ));
+    _video = widget.videoBuilder == null && !Platform.isAndroid
         ? VideoController(
             _player,
             configuration: VideoControllerConfiguration(
@@ -1441,49 +1444,6 @@ class _PlayerScreenState extends State<PlayerScreen>
     }
   }
 
-  Future<void> _openNativeExoPlayer() async {
-    final url = _plan?.url;
-    if (url == null || url.isEmpty) {
-      _interactions.hint('当前播放地址未就绪，请稍候');
-      return;
-    }
-    await _player.pause();
-    final dramaTitle = widget.detail.drama.title;
-    final ep = widget.detail.episodes[_index];
-    final episodeTitle = '第 ${ep.number} 集';
-    final currentPos = _player.state.position.inMilliseconds / 1000.0;
-
-    final episodesList = widget.detail.episodes.asMap().entries.map((entry) {
-      final idx = entry.key;
-      final item = entry.value;
-      return {
-        'index': idx,
-        'number': item.number,
-        'title': '第 ${item.number} 集',
-        'url': idx == _index ? url : '',
-      };
-    }).toList();
-
-    final result = await AppDevice.openNativeExoPlayer(
-      url: url,
-      title: dramaTitle,
-      episodeTitle: episodeTitle,
-      index: _index,
-      positionSeconds: currentPos,
-      episodesJson: jsonEncode(episodesList),
-    );
-
-    if (result != null && mounted && !_closed) {
-      final newIndex = (result['index'] as num?)?.toInt() ?? _index;
-      final newPosMs = (result['position'] as num?)?.toDouble() ?? 0.0;
-      if (newIndex != _index) {
-        await _play(newIndex, position: newPosMs / 1000.0);
-      } else if (newPosMs > 0) {
-        await _seekTo(Duration(milliseconds: newPosMs.toInt()));
-      }
-    }
-  }
-
   @override
   void dispose() {
     _closed = true;
@@ -1696,7 +1656,6 @@ class _PlayerScreenState extends State<PlayerScreen>
                 : null,
             onEpisodes: () => _televisionEpisodes(context),
             onSettings: () => _televisionSettings(context),
-            onExternalPlayer: _openNativeExoPlayer,
             onBack: _back,
           )
         : PlayerControls(
@@ -1765,6 +1724,12 @@ class _PlayerScreenState extends State<PlayerScreen>
             children: [
               if (widget.videoBuilder != null)
                 widget.videoBuilder!(layeredControls)
+              else if (_player is LunaExoPlayer)
+                LunaExoVideoView(
+                  player: _player as LunaExoPlayer,
+                  fit: BoxFit.contain,
+                  controls: (_) => layeredControls,
+                )
               else
                 Video(
                   controller: _video!,
