@@ -155,15 +155,43 @@ class LunaExoPlayer implements Player {
           'Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36';
     }
 
-    final isHls = url.toLowerCase().contains('.m3u8') ||
+    bool isHls = url.toLowerCase().contains('.m3u8') ||
         url.toLowerCase().contains('hls') ||
         (headers['accept']?.contains('mpegurl') ?? false);
-    final formatHint = isHls ? VideoFormat.hls : null;
+
+    final uri = Uri.tryParse(url);
+    if (uri == null && !url.startsWith('/')) {
+      DiaryService.add('[ExoPlayer] 错误: 无效的播放地址 $url');
+      throw Exception('无效的播放地址: $url');
+    }
+
+    // 先导探测：如果尚未显式判定为 HLS，向网络地址快速嗅探前置响应头与内容，智能识别
+    if (!isHls && uri != null && (uri.scheme == 'http' || uri.scheme == 'https')) {
+      try {
+        final client = HttpClient()..connectionTimeout = const Duration(seconds: 3);
+        final req = await client.getUrl(uri);
+        headers.forEach((k, v) => req.headers.set(k, v));
+        req.headers.set('Range', 'bytes=0-512');
+        final resp = await req.close();
+        final cType = resp.headers.contentType?.toString().toLowerCase() ?? '';
+        final chunks = await resp.take(1).toList();
+        final firstChunk = chunks.isNotEmpty ? String.fromCharCodes(chunks.first) : '';
+        DiaryService.add('[Sniff] 探测结果: status=${resp.statusCode}, contentType=$cType, prefix=${firstChunk.length > 20 ? firstChunk.substring(0, 20) : firstChunk}');
+        if (cType.contains('mpegurl') || firstChunk.contains('#EXTM3U')) {
+          isHls = true;
+          DiaryService.add('[Sniff] 自动识别为 HLS 流，注入 formatHint: VideoFormat.hls');
+        }
+        client.close(force: true);
+      } catch (e) {
+        DiaryService.add('[Sniff] 探测警告 (非致命): $e');
+      }
+    }
+
+    VideoFormat? formatHint = isHls ? VideoFormat.hls : null;
 
     DiaryService.add('[ExoPlayer] open(gen=$myGen): url=$url, isHls=$isHls, formatHint=$formatHint, headers=${headers.keys.toList()}');
 
     VideoPlayerController c;
-    final uri = Uri.tryParse(url);
     if (url.startsWith('/') || (uri != null && uri.scheme == 'file')) {
       final filePath = uri != null && uri.scheme == 'file' ? uri.toFilePath() : url;
       DiaryService.add('[ExoPlayer] 本地文件播放: $filePath');
@@ -171,32 +199,64 @@ class LunaExoPlayer implements Player {
         File(filePath),
         videoPlayerOptions: VideoPlayerOptions(mixWithOthers: true),
       );
-    } else if (uri != null) {
+    } else {
       c = VideoPlayerController.networkUrl(
-        uri,
+        uri!,
         formatHint: formatHint,
         httpHeaders: headers,
         videoPlayerOptions: VideoPlayerOptions(mixWithOthers: true),
       );
-    } else {
-      DiaryService.add('[ExoPlayer] 错误: 无效的播放地址 $url');
-      throw Exception('无效的播放地址: $url');
     }
 
     try {
-      DiaryService.add('[ExoPlayer] c.initialize() 开始...');
+      DiaryService.add('[ExoPlayer] c.initialize() 开始 (formatHint=$formatHint)...');
       await c.initialize();
       DiaryService.add(
           '[ExoPlayer] c.initialize() 成功! duration=${c.value.duration}, size=${c.value.size}, isInitialized=${c.value.isInitialized}');
     } catch (e, stack) {
-      DiaryService.add('[ExoPlayer] c.initialize() 失败! 异常: $e\n堆栈: $stack');
-      if (myGen == _openGeneration) {
-        _safeAdd(stream.errorController, e.toString());
+      DiaryService.add('[ExoPlayer] 首次 initialize 失败: $e');
+      // 如果首次尝试失败，且为网络视频，则原地使用交替格式（HLS <-> MP4）自愈重试
+      if (uri != null && (uri.scheme == 'http' || uri.scheme == 'https')) {
+        final alternateFormat = formatHint == VideoFormat.hls ? null : VideoFormat.hls;
+        DiaryService.add('[ExoPlayer] 启动自愈重试，切换格式为 formatHint=$alternateFormat...');
+        try {
+          await c.dispose();
+        } catch (_) {}
+
+        final retryHeaders = Map<String, String>.from(headers);
+        if (alternateFormat == VideoFormat.hls) {
+          retryHeaders['Accept'] = 'application/vnd.apple.mpegurl,application/x-mpegURL,*/*';
+        }
+        c = VideoPlayerController.networkUrl(
+          uri,
+          formatHint: alternateFormat,
+          httpHeaders: retryHeaders,
+          videoPlayerOptions: VideoPlayerOptions(mixWithOthers: true),
+        );
+        try {
+          await c.initialize();
+          formatHint = alternateFormat;
+          DiaryService.add('[ExoPlayer] 自愈重试成功! duration=${c.value.duration}');
+        } catch (retryErr, retryStack) {
+          DiaryService.add('[ExoPlayer] 自愈重试依然失败! 异常: $retryErr\n堆栈: $retryStack');
+          if (myGen == _openGeneration) {
+            _safeAdd(stream.errorController, retryErr.toString());
+          }
+          try {
+            await c.dispose();
+          } catch (_) {}
+          rethrow;
+        }
+      } else {
+        DiaryService.add('[ExoPlayer] c.initialize() 失败! 异常: $e\n堆栈: $stack');
+        if (myGen == _openGeneration) {
+          _safeAdd(stream.errorController, e.toString());
+        }
+        try {
+          await c.dispose();
+        } catch (_) {}
+        rethrow;
       }
-      try {
-        await c.dispose();
-      } catch (_) {}
-      rethrow;
     }
 
     if (_disposed || myGen != _openGeneration) {
