@@ -320,8 +320,6 @@ class _PlayerControlsState extends State<PlayerControls> {
                 ),
               ),
             ),
-            if (!AppLayout.isTelevision(context) && widget.swipeEnabled)
-              _redFruitBrightnessBar(),
             _gestureFeedback(),
           ],
         ),
@@ -996,163 +994,69 @@ class _PlayerControlsState extends State<PlayerControls> {
     );
   }
 
-  Widget _redFruitBrightnessBar() {
-    return Positioned(
-      left: 16,
-      top: 0,
-      bottom: 0,
-      child: Center(
-        child: AnimatedBuilder(
-          animation: widget.interactions,
-          builder: (context, _) {
-            final interactions = widget.interactions;
-            final isActive = interactions.isBrightnessActive;
-            final shouldShow = isActive || _visible;
-            final brightness = interactions.brightness.clamp(0.01, 1.0);
-            final percent = (brightness * 100).round();
-
-            const double barHeight = 160.0;
-            const double thumbSize = 38.0;
-            const double travel = barHeight - thumbSize;
-            final double bottomOffset = (brightness * travel).clamp(0.0, travel);
-
-            final IconData sunIcon = brightness < 0.33
-                ? Icons.brightness_low_rounded
-                : brightness < 0.66
-                    ? Icons.brightness_medium_rounded
-                    : Icons.wb_sunny_rounded;
-
-            return AnimatedOpacity(
-              opacity: shouldShow ? 1.0 : 0.0,
-              duration: const Duration(milliseconds: 200),
-              curve: Curves.easeInOut,
-              child: IgnorePointer(
-                ignoring: !shouldShow,
-                child: SizedBox(
-                  width: 90,
-                  height: barHeight,
-                  child: Stack(
-                    clipBehavior: Clip.none,
-                    alignment: Alignment.centerLeft,
-                    children: [
-                      // 滑轨导向槽
-                      Positioned(
-                        left: (thumbSize - 4) / 2,
-                        top: thumbSize / 2,
-                        bottom: thumbSize / 2,
-                        width: 4,
-                        child: Container(
-                          decoration: BoxDecoration(
-                            color: Colors.white.withValues(alpha: 0.25),
-                            borderRadius: BorderRadius.circular(2),
-                          ),
-                          alignment: Alignment.bottomCenter,
-                          child: FractionallySizedBox(
-                            heightFactor: brightness,
-                            child: Container(
-                              decoration: BoxDecoration(
-                                color: Colors.amberAccent.withValues(alpha: 0.9),
-                                borderRadius: BorderRadius.circular(2),
-                              ),
-                            ),
-                          ),
-                        ),
-                      ),
-                      // 红果短剧风格：上下拉动的小太阳图标滑块与数值气泡
-                      Positioned(
-                        left: 0,
-                        bottom: bottomOffset,
-                        child: GestureDetector(
-                          behavior: HitTestBehavior.opaque,
-                          onVerticalDragUpdate: (details) {
-                            // 向上拉动增大亮度，向下拉动减小亮度
-                            final delta = -details.primaryDelta! / travel;
-                            interactions.setBrightnessDirect(brightness + delta);
-                          },
-                          onVerticalDragEnd: (_) {
-                            interactions.dismissBrightnessHud();
-                          },
-                          onVerticalDragCancel: () {
-                            interactions.dismissBrightnessHud();
-                          },
-                          child: Row(
-                            mainAxisSize: MainAxisSize.min,
-                            children: [
-                              Container(
-                                width: thumbSize,
-                                height: thumbSize,
-                                decoration: BoxDecoration(
-                                  color: const Color(0xDD1E1E1E),
-                                  shape: BoxShape.circle,
-                                  border: Border.all(
-                                    color: Colors.white.withValues(alpha: 0.6),
-                                    width: 1.5,
-                                  ),
-                                  boxShadow: const [
-                                    BoxShadow(
-                                      color: Colors.black45,
-                                      blurRadius: 8,
-                                      spreadRadius: 1,
-                                    ),
-                                  ],
-                                ),
-                                child: Center(
-                                  child: Icon(
-                                    sunIcon,
-                                    color: Colors.amberAccent,
-                                    size: 20,
-                                  ),
-                                ),
-                              ),
-                              const SizedBox(width: 8),
-                              Container(
-                                padding: const EdgeInsets.symmetric(
-                                  horizontal: 7,
-                                  vertical: 3,
-                                ),
-                                decoration: BoxDecoration(
-                                  color: Colors.black.withValues(alpha: 0.75),
-                                  borderRadius: BorderRadius.circular(10),
-                                  border: Border.all(
-                                    color: Colors.white.withValues(alpha: 0.25),
-                                    width: 0.8,
-                                  ),
-                                  boxShadow: const [
-                                    BoxShadow(
-                                      color: Colors.black38,
-                                      blurRadius: 4,
-                                    ),
-                                  ],
-                                ),
-                                child: Text(
-                                  '$percent%',
-                                  style: const TextStyle(
-                                    color: Colors.white,
-                                    fontSize: 12,
-                                    fontWeight: FontWeight.bold,
-                                    letterSpacing: 0.2,
-                                  ),
-                                ),
-                              ),
-                            ],
-                          ),
-                        ),
-                      ),
-                    ],
-                  ),
-                ),
-              ),
-            );
-          },
-        ),
-      ),
-    );
-  }
-
   Widget _gestureFeedback() => AnimatedBuilder(
     animation: widget.interactions,
     builder: (context, _) {
+      final hud = widget.interactions.hudState;
       final feedback = widget.interactions.feedback;
+      if (hud.type == SwipeAction.brightness) {
+        final value = hud.value.clamp(0.0, 1.0);
+        final percent = (value * 100).round();
+        final icon = value < 0.33
+            ? Icons.brightness_low_rounded
+            : value < 0.66
+                ? Icons.brightness_medium_rounded
+                : Icons.brightness_high_rounded;
+        return IgnorePointer(
+          child: Center(
+            child: Container(
+              width: 120,
+              padding: const EdgeInsets.symmetric(vertical: 18, horizontal: 16),
+              decoration: BoxDecoration(
+                color: Colors.black.withValues(alpha: .75),
+                borderRadius: BorderRadius.circular(16),
+                border: Border.all(color: Colors.white.withValues(alpha: .15), width: 1),
+                boxShadow: [
+                  BoxShadow(
+                    color: Colors.black.withValues(alpha: .4),
+                    blurRadius: 18,
+                    spreadRadius: 2,
+                  ),
+                ],
+              ),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Icon(icon, color: Colors.white, size: 36),
+                  const SizedBox(height: 14),
+                  SizedBox(
+                    width: 70,
+                    height: 6,
+                    child: ClipRRect(
+                      borderRadius: BorderRadius.circular(3),
+                      child: LinearProgressIndicator(
+                        value: value,
+                        backgroundColor: Colors.white24,
+                        valueColor: const AlwaysStoppedAnimation<Color>(Colors.white),
+                      ),
+                    ),
+                  ),
+                  const SizedBox(height: 12),
+                  Text(
+                    '亮度 $percent%',
+                    style: const TextStyle(
+                      color: Colors.white,
+                      fontSize: 14,
+                      fontWeight: FontWeight.bold,
+                      letterSpacing: 0.5,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ),
+        );
+      }
       if (feedback.isEmpty) return const SizedBox.shrink();
       return IgnorePointer(
         child: Align(
