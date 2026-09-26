@@ -212,26 +212,49 @@ class _RemoteGridState extends State<RemoteGrid> {
     final generation = ++_generation;
     _target = widget.itemKeys[index];
     final node = _node(index);
+
+    if (_scroll.hasClients) {
+      final row = index ~/ widget.columns;
+      final itemTop =
+          widget.padding.top + row * (widget.itemExtent + widget.spacing);
+      final itemBottom = itemTop + widget.itemExtent;
+      final currentOffset = _scroll.offset;
+      final viewportHeight = _scroll.position.viewportDimension;
+
+      double? targetOffset;
+      if (row == 0) {
+        if (currentOffset > 0.0) {
+          targetOffset = 0.0;
+        }
+      } else if (itemTop < currentOffset + widget.padding.top) {
+        targetOffset = itemTop - widget.padding.top;
+      } else if (itemBottom > currentOffset + viewportHeight - widget.padding.bottom) {
+        targetOffset = itemBottom - viewportHeight + widget.padding.bottom;
+      }
+
+      if (targetOffset != null) {
+        final clamped = targetOffset.clamp(0.0, _scroll.position.maxScrollExtent);
+        if ((clamped - currentOffset).abs() > 1.0) {
+          _scroll.animateTo(
+            clamped,
+            duration: const Duration(milliseconds: 180),
+            curve: Curves.easeOutCubic,
+          );
+        }
+      }
+    }
+
     if (node.context != null) {
       node.requestFocus();
       _target = null;
-      return;
+    } else {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted && generation == _generation && node.context != null) {
+          node.requestFocus();
+          _target = null;
+        }
+      });
     }
-    if (_scroll.hasClients) {
-      final top =
-          widget.padding.top +
-          (index ~/ widget.columns) * (widget.itemExtent + widget.spacing);
-      final offset = top < _scroll.offset
-          ? top
-          : top + widget.itemExtent - _scroll.position.viewportDimension;
-      _scroll.jumpTo(offset.clamp(0.0, _scroll.position.maxScrollExtent));
-    }
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (mounted && generation == _generation && node.context != null) {
-        node.requestFocus();
-        _target = null;
-      }
-    });
   }
 
   KeyEventResult _key(FocusNode node, KeyEvent event) {
@@ -246,12 +269,33 @@ class _RemoteGridState extends State<RemoteGrid> {
     final key = event.logicalKey;
     final int next;
     if (key == LogicalKeyboardKey.arrowDown) {
-      if (index ~/ widget.columns ==
-          (widget.itemKeys.length - 1) ~/ widget.columns) {
+      final lastRow = (widget.itemKeys.length - 1) ~/ widget.columns;
+      if (index ~/ widget.columns == lastRow) {
+        if (_scroll.hasClients &&
+            _scroll.offset < _scroll.position.maxScrollExtent - 1.0) {
+          _scroll.animateTo(
+            _scroll.position.maxScrollExtent,
+            duration: const Duration(milliseconds: 150),
+            curve: Curves.easeOutCubic,
+          );
+          return KeyEventResult.handled;
+        }
         return KeyEventResult.ignored;
       }
       next = (index + widget.columns).clamp(0, widget.itemKeys.length - 1);
     } else if (key == LogicalKeyboardKey.arrowUp) {
+      if (index < widget.columns) {
+        if (_scroll.hasClients && _scroll.offset > 1.0) {
+          _scroll.animateTo(
+            0.0,
+            duration: const Duration(milliseconds: 150),
+            curve: Curves.easeOutCubic,
+          );
+          return KeyEventResult.handled;
+        }
+        FocusScope.of(context).focusInDirection(TraversalDirection.up);
+        return KeyEventResult.handled;
+      }
       next = index - widget.columns;
     } else if (key == LogicalKeyboardKey.arrowRight) {
       if (index % widget.columns == widget.columns - 1 ||

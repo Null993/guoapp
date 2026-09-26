@@ -180,9 +180,9 @@ class _PlayerScreenState extends State<PlayerScreen>
     _player =
         widget.playerFactory?.call() ??
         Player(
-          configuration: const PlayerConfiguration(
-            bufferSize: 32 * 1024 * 1024,
-            logLevel: MPVLogLevel.v,
+          configuration: PlayerConfiguration(
+            bufferSize: Platform.isAndroid ? 8 * 1024 * 1024 : 32 * 1024 * 1024,
+            logLevel: MPVLogLevel.error,
           ),
         );
     _video = widget.videoBuilder == null
@@ -996,6 +996,15 @@ class _PlayerScreenState extends State<PlayerScreen>
         }
         final platform = _player.platform;
         if (platform is NativePlayer) {
+          if (Platform.isAndroid) {
+            await platform.setProperty('hwdec', 'mediacodec,mediacodec-copy,auto');
+            await platform.setProperty('hwdec-codecs', 'all');
+            await platform.setProperty('vd-lavc-fast', 'yes');
+            await platform.setProperty('vd-lavc-threads', '4');
+            await platform.setProperty('vd-lavc-skiploopfilter', 'nonkey');
+            await platform.setProperty('video-sync', 'audio');
+            await platform.setProperty('framedrop', 'vo');
+          }
           await platform.setProperty(
             'demuxer-lavf-o',
             [
