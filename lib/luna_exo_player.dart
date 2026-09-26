@@ -1,10 +1,12 @@
 import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:media_kit/media_kit.dart';
+import 'package:media_kit/src/models/player_stream.dart';
+import 'package:media_kit/src/player/platform_player.dart';
 import 'package:video_player/video_player.dart';
 
-/// 模拟与 media_kit.PlayerStreams 接口对齐的流集合
-class LunaPlayerStreams implements PlayerStreams {
+/// 模拟与 media_kit.PlayerStream 接口对齐的流集合
+class LunaPlayerStreams implements PlayerStream {
   final StreamController<Duration> positionController = StreamController<Duration>.broadcast();
   final StreamController<Duration> durationController = StreamController<Duration>.broadcast();
   final StreamController<Duration> bufferController = StreamController<Duration>.broadcast();
@@ -101,7 +103,7 @@ class LunaExoPlayer implements Player {
   final LunaPlayerStreams stream = LunaPlayerStreams();
 
   @override
-  dynamic get platform => null;
+  PlatformPlayer? get platform => null;
 
   @override
   Future<int> get handle => Future<int>.value(0);
