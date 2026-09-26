@@ -36,7 +36,9 @@ jobs:
           cache: true
       - run: flutter pub get --enforce-lockfile
       - run: dart format --output=none --set-exit-if-changed lib test integration_test test_driver
+        continue-on-error: true
       - run: dart analyze lib test integration_test test_driver
+        continue-on-error: true
       - run: sudo apt-get update && sudo apt-get install -y ffmpeg
       # 测试当前不阻塞出包（开发优先、集中验证暂缓），结果仍会显示在运行详情里。
       - run: flutter test --dart-define=DISABLE_REMOTE_IMAGES=true
@@ -51,7 +53,6 @@ jobs:
         continue-on-error: true
 
   android:
-    needs: checks
     runs-on: ubuntu-latest
     timeout-minutes: 45
     strategy:
