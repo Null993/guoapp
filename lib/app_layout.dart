@@ -100,6 +100,19 @@ class AppDevice {
       await channel.invokeMethod('resetBrightness');
     } catch (_) {}
   }
+
+  static Future<bool> openExternalPlayer(String url, {String title = '短剧'}) async {
+    if (defaultTargetPlatform != TargetPlatform.android) return false;
+    try {
+      final res = await channel.invokeMethod<bool>('openExternalPlayer', {
+        'url': url,
+        'title': title,
+      });
+      return res ?? false;
+    } catch (_) {
+      return false;
+    }
+  }
 }
 
 class AppLayout extends InheritedWidget {

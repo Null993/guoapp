@@ -203,6 +203,26 @@ class MainActivity : FlutterActivity() {
                             window.attributes = lp
                             result.success(true)
                         }
+                        "openExternalPlayer" -> {
+                            val url = call.argument<String>("url")
+                            val title = call.argument<String>("title") ?: "短剧"
+                            if (!url.isNullOrEmpty()) {
+                                try {
+                                    val intent = Intent(Intent.ACTION_VIEW).apply {
+                                        setDataAndType(Uri.parse(url), "video/*")
+                                        putExtra("title", title)
+                                        putExtra("return_result", true)
+                                        addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                                    }
+                                    startActivity(intent)
+                                    result.success(true)
+                                } catch (e: Exception) {
+                                    result.error("no_player", "未找到外部播放器: ${e.message}", null)
+                                }
+                            } else {
+                                result.error("invalid_url", "播放地址为空", null)
+                            }
+                        }
                         else -> result.notImplemented()
                     }
                 }

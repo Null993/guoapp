@@ -27,6 +27,7 @@ class TelevisionControls extends StatefulWidget {
     required this.onSettings,
     required this.onBack,
     this.enhancement,
+    this.onExternalPlayer,
   });
   final Player player;
   final String title;
@@ -40,6 +41,7 @@ class TelevisionControls extends StatefulWidget {
   final Future<void> Function() onSettings;
   final VoidCallback onBack;
   final VideoEnhancementController? enhancement;
+  final VoidCallback? onExternalPlayer;
 
   @override
   State<TelevisionControls> createState() => _TelevisionControlsState();
@@ -440,6 +442,13 @@ class _TelevisionControlsState extends State<TelevisionControls> {
                               onPressed: () =>
                                   _openPanel(widget.onSettings, _settings),
                             ),
+                            if (widget.onExternalPlayer != null)
+                              RemoteButton(
+                                key: const ValueKey('tv-external-ex-player'),
+                                label: 'EX播放器',
+                                icon: Icons.open_in_new_rounded,
+                                onPressed: widget.onExternalPlayer,
+                              ),
                           ],
                         ),
                       ),

@@ -997,23 +997,28 @@ class _PlayerScreenState extends State<PlayerScreen>
         final platform = _player.platform;
         if (platform is NativePlayer) {
           if (Platform.isAndroid) {
-            await platform.setProperty('hwdec', 'mediacodec,mediacodec-copy,auto');
-            await platform.setProperty('hwdec-codecs', 'all');
             if (_television) {
+              await platform.setProperty('hwdec', 'mediacodec');
+              await platform.setProperty('hwdec-codecs', 'all');
+              await platform.setProperty('opengl-pbo', 'yes');
+              await platform.setProperty('video-latency-hacks', 'yes');
               await platform.setProperty('scale', 'bilinear');
               await platform.setProperty('cscale', 'bilinear');
               await platform.setProperty('dscale', 'bilinear');
               await platform.setProperty('correct-downscaling', 'no');
               await platform.setProperty('vd-lavc-skiploopfilter', 'all');
-              await platform.setProperty('vd-lavc-skipidct', 'nonref');
-              await platform.setProperty('demuxer-max-bytes', '${8 * 1024 * 1024}');
-              await platform.setProperty('demuxer-max-back-bytes', '${2 * 1024 * 1024}');
-              await platform.setProperty('demuxer-readahead-secs', '10');
+              await platform.setProperty('vd-lavc-skipidct', 'all');
+              await platform.setProperty('vd-lavc-threads', '2');
+              await platform.setProperty('demuxer-max-bytes', '${4 * 1024 * 1024}');
+              await platform.setProperty('demuxer-max-back-bytes', '${1 * 1024 * 1024}');
+              await platform.setProperty('demuxer-readahead-secs', '5');
             } else {
+              await platform.setProperty('hwdec', 'auto-safe');
+              await platform.setProperty('hwdec-codecs', 'all');
               await platform.setProperty('vd-lavc-skiploopfilter', 'nonkey');
+              await platform.setProperty('vd-lavc-threads', '4');
             }
             await platform.setProperty('vd-lavc-fast', 'yes');
-            await platform.setProperty('vd-lavc-threads', '4');
             await platform.setProperty('video-sync', 'audio');
             await platform.setProperty('framedrop', 'vo');
           }
@@ -1435,6 +1440,17 @@ class _PlayerScreenState extends State<PlayerScreen>
     }
   }
 
+  void _openExternalPlayer() {
+    final url = _plan?.url;
+    if (url == null || url.isEmpty) {
+      _interactions.hint('当前播放地址无效');
+      return;
+    }
+    _player.pause();
+    final title = '${widget.detail.drama.title} · 第 ${widget.detail.episodes[_index].number} 集';
+    AppDevice.openExternalPlayer(url, title: title);
+  }
+
   @override
   void dispose() {
     _closed = true;
@@ -1647,6 +1663,7 @@ class _PlayerScreenState extends State<PlayerScreen>
                 : null,
             onEpisodes: () => _televisionEpisodes(context),
             onSettings: () => _televisionSettings(context),
+            onExternalPlayer: _openExternalPlayer,
             onBack: _back,
           )
         : PlayerControls(
