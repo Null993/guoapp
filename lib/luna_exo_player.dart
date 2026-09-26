@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:media_kit/media_kit.dart';
+import 'package:media_kit/src/models/player_log.dart';
 import 'package:media_kit/src/models/player_stream.dart';
 import 'package:media_kit/src/player/platform_player.dart';
 import 'package:video_player/video_player.dart';
@@ -17,7 +18,7 @@ class LunaPlayerStreams implements PlayerStream {
   final StreamController<double> volumeController = StreamController<double>.broadcast();
   final StreamController<double> rateController = StreamController<double>.broadcast();
   final StreamController<VideoParams> videoParamsController = StreamController<VideoParams>.broadcast();
-  final StreamController<String> logController = StreamController<String>.broadcast();
+  final StreamController<PlayerLog> logController = StreamController<PlayerLog>.broadcast();
   final StreamController<double> pitchController = StreamController<double>.broadcast();
 
   @override
@@ -51,7 +52,7 @@ class LunaPlayerStreams implements PlayerStream {
   Stream<VideoParams> get videoParams => videoParamsController.stream;
 
   @override
-  Stream<String> get log => logController.stream;
+  Stream<PlayerLog> get log => logController.stream;
 
   @override
   Stream<double> get pitch => pitchController.stream;
