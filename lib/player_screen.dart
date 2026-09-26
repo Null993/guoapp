@@ -999,9 +999,21 @@ class _PlayerScreenState extends State<PlayerScreen>
           if (Platform.isAndroid) {
             await platform.setProperty('hwdec', 'mediacodec,mediacodec-copy,auto');
             await platform.setProperty('hwdec-codecs', 'all');
+            if (_television) {
+              await platform.setProperty('scale', 'bilinear');
+              await platform.setProperty('cscale', 'bilinear');
+              await platform.setProperty('dscale', 'bilinear');
+              await platform.setProperty('correct-downscaling', 'no');
+              await platform.setProperty('vd-lavc-skiploopfilter', 'all');
+              await platform.setProperty('vd-lavc-skipidct', 'nonref');
+              await platform.setProperty('demuxer-max-bytes', '${8 * 1024 * 1024}');
+              await platform.setProperty('demuxer-max-back-bytes', '${2 * 1024 * 1024}');
+              await platform.setProperty('demuxer-readahead-secs', '10');
+            } else {
+              await platform.setProperty('vd-lavc-skiploopfilter', 'nonkey');
+            }
             await platform.setProperty('vd-lavc-fast', 'yes');
             await platform.setProperty('vd-lavc-threads', '4');
-            await platform.setProperty('vd-lavc-skiploopfilter', 'nonkey');
             await platform.setProperty('video-sync', 'audio');
             await platform.setProperty('framedrop', 'vo');
           }

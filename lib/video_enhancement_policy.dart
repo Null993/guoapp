@@ -142,6 +142,9 @@ VideoEnhancementDecision chooseVideoEnhancement({
   if (preferences.mode == VideoEnhancementMode.off) {
     return const VideoEnhancementDecision(original, null, '画质增强已关闭');
   }
+  if (television) {
+    return const VideoEnhancementDecision(original, null, '电视端原生硬件直通，确保极速流畅');
+  }
   final source = videoDisplaySize(parameters);
   if (!ready ||
       source == null ||
