@@ -1479,7 +1479,7 @@ class _PlayerScreenState extends State<PlayerScreen>
       if (newIndex != _index) {
         await _play(newIndex, position: newPosMs / 1000.0);
       } else if (newPosMs > 0) {
-        await _seekTo(newPosMs / 1000.0);
+        await _seekTo(Duration(milliseconds: newPosMs.toInt()));
       }
     }
   }
