@@ -14,13 +14,14 @@ import (
 )
 
 type nativeHealthStep struct {
-	Name       string `json:"name"`
-	State      string `json:"state"`
-	Message    string `json:"message"`
-	Host       string `json:"host,omitempty"`
-	HTTPStatus int    `json:"httpStatus,omitempty"`
-	ElapsedMS  int64  `json:"elapsedMs"`
-	CFRay      string `json:"cfRay,omitempty"`
+	Name             string `json:"name"`
+	State            string `json:"state"`
+	Message          string `json:"message"`
+	Host             string `json:"host,omitempty"`
+	HTTPStatus       int    `json:"httpStatus,omitempty"`
+	ElapsedMS        int64  `json:"elapsedMs"`
+	CFRay            string `json:"cfRay,omitempty"`
+	ProxyIntercepted bool   `json:"proxyIntercepted,omitempty"`
 }
 
 type nativeSourceHealth struct {
@@ -95,6 +96,11 @@ func (engine *nativeEngine) checkSource(ctx context.Context, source string, sele
 			var backoff *requestBackoff
 			if errors.As(err, &backoff) {
 				step.HTTPStatus, step.Host = backoff.status, backoff.host
+			}
+			var intercepted *proxyInterceptionError
+			if errors.As(err, &intercepted) {
+				step.ProxyIntercepted = true
+				step.HTTPStatus, step.Host = intercepted.status, intercepted.host
 			}
 		}
 		report.Steps = append(report.Steps, step)
@@ -246,6 +252,7 @@ func (d *Downloader) sourceProbeBytes(ctx context.Context, address, referer stri
 	}
 	ctx, cancel := context.WithTimeout(ctx, 15*time.Second)
 	defer cancel()
+	ctx = requestTimingContext(ctx)
 	request, err := http.NewRequestWithContext(ctx, http.MethodGet, address, nil)
 	if err != nil {
 		return nil, err

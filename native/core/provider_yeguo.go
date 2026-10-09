@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net/url"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -12,6 +13,40 @@ import (
 )
 
 var yeguoFilterFields = []string{"theme", "setting", "background", "time", "recommend"}
+
+const yeguoUnnumberedEpisode = 1 << 30
+
+var yeguoTitleEpisode = regexp.MustCompile(`(?i)(\d+)\s*(?:集|话|期)`)
+
+type yeguoEpisodeCandidate struct {
+	id      string
+	title   string
+	number  int
+	titleNo int
+}
+
+func yeguoEpisodeNumbersUsable(candidates []yeguoEpisodeCandidate) bool {
+	seen := map[int]bool{}
+	for _, candidate := range candidates {
+		if candidate.number < 1 || seen[candidate.number] {
+			return false
+		}
+		seen[candidate.number] = true
+	}
+	return true
+}
+
+func yeguoTitleEpisodeNumber(title string) int {
+	if number := episodeIndex(title, 0); number > 0 {
+		return number
+	}
+	if match := yeguoTitleEpisode.FindStringSubmatch(title); len(match) > 1 {
+		if number, err := strconv.Atoi(match[1]); err == nil && number > 0 && number <= 100000 {
+			return number
+		}
+	}
+	return 0
+}
 
 func validYeguoCategory(category string) bool {
 	field, value, valid := strings.Cut(category, ":")
@@ -223,29 +258,56 @@ func (d *Downloader) fetchYeguoDetail(ctx context.Context, sourceID string) (Dra
 	if !valid || len(episodes) > 10000 {
 		return Drama{}, nil, errors.New("野果分集目录格式无效")
 	}
-	chapters := make([]Chapter, 0, len(episodes))
-	seenIDs, seenNumbers := map[string]bool{}, map[int]bool{}
+	seenIDs := map[string]bool{}
+	var candidates []yeguoEpisodeCandidate
 	for _, value := range episodes {
 		episode, _ := value.(map[string]any)
 		if advertisement, _ := yeguoFlag(episode["is_adv"]); advertisement {
 			continue
 		}
 		id := mapString(episode, "id")
-		number, valid := webProviderInteger(episode["sort"], 100000)
-		if !webProviderNumericID.MatchString(id) || !valid || number < 1 || seenIDs[id] || seenNumbers[number] {
-			return Drama{}, nil, errors.New("野果分集编号无效或重复，请刷新详情")
+		if !webProviderNumericID.MatchString(id) || seenIDs[id] {
+			continue
 		}
-		seenIDs[id], seenNumbers[number] = true, true
-		title := firstNonEmpty(mapString(episode, "title"), fmt.Sprintf("第 %d 集", number))
-		chapters = append(chapters, Chapter{ID: providerChapterID(sourceYeguo, sourceID, id), Source: sourceYeguo,
-			Title: truncate(title, 256), CurrentEpisode: rawEpisode(number), VideoURL: "yeguo-play://" + id,
-			PageURL: yeguoEpisodePage(site, sourceID, number), Referer: site + "/"})
+		seenIDs[id] = true
+		number, numberValid := webProviderInteger(episode["sort"], 100000)
+		if !numberValid || number < 1 {
+			number = 0
+		}
+		title := mapString(episode, "title")
+		candidates = append(candidates, yeguoEpisodeCandidate{id: id, title: title, number: number, titleNo: yeguoTitleEpisodeNumber(title)})
 	}
-	sort.SliceStable(chapters, func(i, j int) bool {
-		left, _ := strconv.Atoi(chapters[i].EpisodeString(i + 1))
-		right, _ := strconv.Atoi(chapters[j].EpisodeString(j + 1))
+	if len(candidates) == 0 {
+		return Drama{}, nil, errors.New("野果未返回可播放的分集，请刷新详情")
+	}
+	numbered := yeguoEpisodeNumbersUsable(candidates)
+	sort.SliceStable(candidates, func(i, j int) bool {
+		if numbered {
+			return candidates[i].number < candidates[j].number
+		}
+		left, right := candidates[i].titleNo, candidates[j].titleNo
+		if left <= 0 {
+			left = yeguoUnnumberedEpisode
+		}
+		if right <= 0 {
+			right = yeguoUnnumberedEpisode
+		}
 		return left < right
 	})
+	chapters := make([]Chapter, 0, len(candidates))
+	for index, candidate := range candidates {
+		number := candidate.number
+		if !numbered || number < 1 {
+			number = index + 1
+		}
+		title := candidate.title
+		if strings.TrimSpace(title) == "" {
+			title = fmt.Sprintf("第 %d 集", number)
+		}
+		chapters = append(chapters, Chapter{ID: providerChapterID(sourceYeguo, sourceID, candidate.id), Source: sourceYeguo,
+			Title: truncate(title, 256), CurrentEpisode: rawEpisode(number), VideoURL: "yeguo-play://" + candidate.id,
+			PageURL: yeguoEpisodePage(site, sourceID, number), Referer: site + "/"})
+	}
 	return drama, chapters, nil
 }
 

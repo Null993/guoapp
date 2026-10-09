@@ -16,7 +16,6 @@ import (
 )
 
 type requestGate struct {
-	busy      bool
 	lastStart time.Time
 }
 
@@ -76,6 +75,8 @@ func catalogResponseBlockReason(response *http.Response, body []byte) string {
 func (d *Downloader) catalogResponseError(request *http.Request, response *http.Response, body []byte) error {
 	reason := catalogResponseBlockReason(response, body)
 	host := strings.ToLower(request.URL.Hostname())
+	elapsed := responseElapsed(request, response)
+	intercepted := proxyInterceptionSuspected(host, response.StatusCode, response.Header, body, elapsed)
 	blocked := response.StatusCode == http.StatusForbidden || response.StatusCode == http.StatusTooManyRequests || reason != ""
 	if d.limiter != nil && blocked {
 		d.limiter.observeBlock(request, response, reason != "")
@@ -95,9 +96,12 @@ func (d *Downloader) catalogResponseError(request *http.Request, response *http.
 			result = &updated
 		}
 		d.limiter.mu.Unlock()
-		if result != nil {
+		if result != nil && !intercepted {
 			return result
 		}
+	}
+	if intercepted {
+		return describeHTTPFailure(host, response.StatusCode, response.Header, body, elapsed)
 	}
 	if reason != "" {
 		return fmt.Errorf("%s HTTP %d：%s", host, response.StatusCode, reason)
@@ -105,7 +109,7 @@ func (d *Downloader) catalogResponseError(request *http.Request, response *http.
 	if response.StatusCode == http.StatusTooManyRequests || response.StatusCode == http.StatusRequestTimeout || response.StatusCode >= 500 {
 		return &sourceTransientError{message: fmt.Sprintf("%s HTTP %d", host, response.StatusCode), status: response.StatusCode}
 	}
-	return fmt.Errorf("%s HTTP %d", host, response.StatusCode)
+	return describeHTTPFailure(host, response.StatusCode, response.Header, body, elapsed)
 }
 
 type requestLimiter struct {
@@ -190,9 +194,12 @@ func (limiter *requestLimiter) acquire(ctx context.Context, request *http.Reques
 				delay = idleDelay
 			}
 		}
-		lowPriorityReady := !background || limiter.foregroundWaiting == 0 && limiter.active == 0
-		if lowPriorityReady && !gate.busy && limiter.active < limiter.concurrency && delay <= 0 {
-			gate.busy = true
+		limit := limiter.concurrency
+		if background && limit > 1 {
+			limit--
+		}
+		priorityReady := !background || limiter.foregroundWaiting == 0
+		if priorityReady && limiter.active < limit && delay <= 0 {
 			gate.lastStart = time.Now()
 			limiter.active++
 			limiter.mu.Unlock()
@@ -220,7 +227,6 @@ func (limiter *requestLimiter) acquire(ctx context.Context, request *http.Reques
 		once.Do(func() {
 			limiter.mu.Lock()
 			limiter.active--
-			gate.busy = false
 			if !background {
 				limiter.lastForeground = time.Now()
 			}
@@ -293,6 +299,7 @@ func (d *Downloader) doPreparedCatalogRequest(request *http.Request, timeout tim
 		ctx, cancel = context.WithTimeout(request.Context(), timeout)
 		request = request.WithContext(ctx)
 	}
+	request = request.WithContext(requestTimingContext(request.Context()))
 	if prepare != nil {
 		prepare(request)
 	}

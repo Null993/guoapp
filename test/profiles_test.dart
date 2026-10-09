@@ -196,7 +196,13 @@ void main() {
     expect(find.text('下载'), findsNothing);
     expect(find.text('黄豆'), findsNothing);
     expect(find.text('黄果 AI'), findsNothing);
-    expect(find.text('红果'), findsOneWidget);
+    expect(
+      find.descendant(
+        of: find.byKey(const ValueKey('source-switch')),
+        matching: find.text('红果'),
+      ),
+      findsOneWidget,
+    );
     await tester.pumpWidget(const SizedBox.shrink());
     store.dispose();
   });

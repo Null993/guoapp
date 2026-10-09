@@ -364,7 +364,13 @@ func (d *Downloader) fetchProviderText(ctx context.Context, rawURL, referer stri
 		referer = rawURL
 	}
 	candidates := d.providerURLCandidates(rawURL)
-	var lastErr error
+	var lastErr, firstErr error
+	note := func(err error) {
+		if firstErr == nil {
+			firstErr = err
+		}
+		lastErr = err
+	}
 	tried := 0
 	for _, candidate := range candidates {
 		if err := ctx.Err(); err != nil {
@@ -406,7 +412,7 @@ func (d *Downloader) fetchProviderText(ctx context.Context, rawURL, referer stri
 			}
 			resp, err := d.doCatalogRequestWithTimeout(req, timeout)
 			if err != nil {
-				lastErr = err
+				note(err)
 				var backoff *requestBackoff
 				if errors.As(err, &backoff) {
 					break
@@ -416,19 +422,19 @@ func (d *Downloader) fetchProviderText(ctx context.Context, rawURL, referer stri
 			body, readErr := io.ReadAll(io.LimitReader(resp.Body, providerMaxBodyBytes+1))
 			closeErr := resp.Body.Close()
 			if readErr != nil {
-				lastErr = readErr
+				note(readErr)
 				continue
 			}
 			if closeErr != nil {
-				lastErr = closeErr
+				note(closeErr)
 				continue
 			}
 			if len(body) > providerMaxBodyBytes {
-				lastErr = fmt.Errorf("response exceeds %d bytes", providerMaxBodyBytes)
+				note(fmt.Errorf("response exceeds %d bytes", providerMaxBodyBytes))
 				continue
 			}
 			if resp.StatusCode < 200 || resp.StatusCode >= 300 || catalogResponseBlockReason(resp, body) != "" {
-				lastErr = d.catalogResponseError(req, resp, body)
+				note(d.catalogResponseError(req, resp, body))
 				if catalogResponseBlockReason(resp, body) != "" || resp.StatusCode >= 400 && resp.StatusCode < 500 && resp.StatusCode != 408 {
 					break
 				}
@@ -448,6 +454,13 @@ func (d *Downloader) fetchProviderText(ctx context.Context, rawURL, referer stri
 		}
 	}
 	if len(candidates) > 1 && lastErr != nil {
+		primary := ""
+		if firstErr != nil {
+			primary = firstErr.Error()
+		}
+		if primary != "" && primary != lastErr.Error() {
+			return "", fmt.Errorf("黄果来源请求失败：已尝试 %d 个域名；主候选 %s；最后错误：%w", tried, primary, lastErr)
+		}
 		return "", fmt.Errorf("黄果来源请求失败：已尝试 %d 个域名，最后错误：%w", tried, lastErr)
 	}
 	return "", lastErr
@@ -758,11 +771,14 @@ func parseHuangguoVideoCards(rawHTML, pageURL string) []Drama {
 }
 
 func parseHuangguoAIEpisodes(rawHTML, pageURL, sourceID string, maxEpisodes int) []providerEpisode {
+	type aiEpisodeCandidate struct {
+		episode providerEpisode
+		listed  bool
+		text    string
+	}
 	matches := reAIEpisodeLink.FindAllStringSubmatchIndex(rawHTML, -1)
-	seen := map[string]bool{}
-	var episodes []providerEpisode
-	usedIndex := map[int]bool{}
 	pageKey := aiEpisodeKey(pageURL, sourceID)
+	var candidates []aiEpisodeCandidate
 	for _, m := range matches {
 		if len(m) < 4 || m[2] < 0 || m[3] < 0 {
 			continue
@@ -773,32 +789,106 @@ func parseHuangguoAIEpisodes(rawHTML, pageURL, sourceID string, maxEpisodes int)
 			continue
 		}
 		fullURL := resolveProviderURL(pageURL, href)
-		if fullURL == "" || fullURL == pageURL || seen[key] || seen[fullURL] {
+		if fullURL == "" || fullURL == pageURL {
 			continue
 		}
 		linkHTML := rawHTML[m[0]:m[1]]
-		title := firstNonEmpty(extractAttr(linkHTML, "title", "aria-label"), cleanText(linkHTML))
-		idx := huangguoEpisodeNumber(key, title)
-		if maxEpisodes > 0 && idx > maxEpisodes {
+		listedID := extractAttr(linkHTML, "data-ep-id")
+		text := cleanText(linkHTML)
+		title := firstNonEmpty(extractAttr(linkHTML, "title", "aria-label"), text)
+		index := huangguoEpisodeNumberFromTexts(key, listedID, text, title)
+		candidates = append(candidates, aiEpisodeCandidate{
+			episode: providerEpisode{Key: key, Title: title, URL: fullURL, Index: index},
+			listed:  strings.TrimSpace(listedID) != "",
+			text:    text,
+		})
+	}
+	listedURL := map[string]bool{}
+	listedKey := map[string]bool{}
+	for _, candidate := range candidates {
+		if candidate.listed {
+			listedURL[candidate.episode.URL] = true
+			listedKey[candidate.episode.Key] = true
+		}
+	}
+	hasListed := len(listedURL) > 0
+	seenKey := map[string]bool{}
+	seenURL := map[string]bool{}
+	var episodes []providerEpisode
+	for _, candidate := range candidates {
+		if hasListed && !candidate.listed && (listedURL[candidate.episode.URL] || listedKey[candidate.episode.Key]) {
 			continue
 		}
-		if idx <= 0 {
-			idx = len(episodes) + 1
-		}
-		idx = nextUnusedEpisodeIndex(idx, usedIndex)
-		if maxEpisodes > 0 && idx > maxEpisodes {
+		if !candidate.listed && huangguoEpisodeNavText(candidate.text) {
 			continue
 		}
-		seen[key] = true
-		seen[fullURL] = true
-		usedIndex[idx] = true
-		episodes = append(episodes, providerEpisode{Key: key, Title: title, URL: fullURL, Index: idx})
+		if seenKey[candidate.episode.Key] || seenURL[candidate.episode.URL] {
+			continue
+		}
+		seenKey[candidate.episode.Key] = true
+		seenURL[candidate.episode.URL] = true
+		episodes = append(episodes, candidate.episode)
 	}
 	sortProviderEpisodes(episodes)
 	if maxEpisodes > 0 && len(episodes) > maxEpisodes {
 		episodes = episodes[:maxEpisodes]
 	}
+	huangguoNormalizeEpisodeIndexes(episodes)
 	return episodes
+}
+
+func huangguoEpisodeNumberFromTexts(key string, texts ...string) int {
+	for _, text := range texts {
+		if n := episodeIndex(text, 0); n > 0 {
+			return n
+		}
+		if n := huangguoDigitsNumber(text); n > 0 {
+			return n
+		}
+	}
+	return huangguoTrailingNumber(key)
+}
+
+func huangguoDigitsNumber(value string) int {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return 0
+	}
+	for i := 0; i < len(value); i++ {
+		if value[i] < '0' || value[i] > '9' {
+			return 0
+		}
+	}
+	n, err := strconv.Atoi(value)
+	if err != nil {
+		return 0
+	}
+	return n
+}
+
+func huangguoEpisodeNavText(text string) bool {
+	switch strings.TrimSpace(text) {
+	case "上一集", "下一集", "上一话", "下一话", "开始观看", "立即播放", "继续观看", "播放", "下载APP", "更多":
+		return true
+	default:
+		return false
+	}
+}
+
+func huangguoNormalizeEpisodeIndexes(episodes []providerEpisode) {
+	if len(episodes) == 0 {
+		return
+	}
+	used := make([]bool, len(episodes)+1)
+	for _, episode := range episodes {
+		if episode.Index <= 0 || episode.Index > len(episodes) || used[episode.Index] {
+			for i := range episodes {
+				episodes[i].Index = i + 1
+			}
+			return
+		}
+		used[episode.Index] = true
+	}
 }
 
 func parseHuangguoVideoEpisodes(rawHTML, pageURL string) []providerEpisode {
@@ -1194,9 +1284,12 @@ func aiEpisodeKey(href, sourceID string) string {
 		return ""
 	}
 	parts := huangguoPathSegments(href)
-	for i := 0; i+2 < len(parts); i++ {
+	for i := 0; i+1 < len(parts); i++ {
 		if parts[i] != "video" || cleanID(parts[i+1]) != sourceID {
 			continue
+		}
+		if i+2 >= len(parts) {
+			return "ep-1"
 		}
 		if key := cleanID(strings.Join(parts[i+2:], "-")); key != "" {
 			return key

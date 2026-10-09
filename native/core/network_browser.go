@@ -36,7 +36,7 @@ func newHuangguoBrowserTransport(base http.RoundTripper, downloader *Downloader)
 	configured, _ := url.Parse(downloader.providerBaseURL(sourceHuangguoVideo))
 	transport := &huangguoBrowserTransport{
 		base: base, router: downloader.proxyRouter, host: configured.Host,
-		insecure: downloader.cfg.InsecureTLS, record: downloader.recordDiagnostic,
+		insecure: downloader.insecureTLS(), record: downloader.recordDiagnostic,
 		clients: make(map[string]browserHTTPClient),
 	}
 	transport.newClient = transport.createClient

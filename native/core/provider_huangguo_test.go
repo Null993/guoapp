@@ -14,10 +14,10 @@ func TestHuangguoAIEpisodeKeyRequiresOwnSeries(t *testing.T) {
 		{"/video/own-1/1", "1"},
 		{"/video/own-1/ep-4", "ep-4"},
 		{"https://huangguoai.com/video/own-1/12", "12"},
+		{"/video/own-1", "ep-1"},
+		{"/video/own-1/", "ep-1"},
 		{"/video/other-1/2", ""},
 		{"/detail/own-1/", ""},
-		{"/video/own-1", ""},
-		{"/video/own-1/", ""},
 		{"/search?q=own-1", ""},
 		{"", ""},
 	}
@@ -158,5 +158,83 @@ func TestHuangguoVideoEpisodesLegacyEntryPrefersNumberedLinks(t *testing.T) {
 	episodes := parseHuangguoVideoEpisodes(rawHTML, "https://huangguo.video/series/synthetic")
 	if len(episodes) != 2 || episodes[0].Key != "video/one" || episodes[1].Index != 2 {
 		t.Fatalf("legacy video entry regressed: %+v", episodes)
+	}
+}
+
+func TestHuangguoAIEpisodesKeepBareFirstEpisodeFromRealGrid(t *testing.T) {
+	rawHTML := `<section class="hg-web-play" data-web-play data-show-episodes="1" data-hg-next-url="/video/3520/ep-2/">
+	<a class="hg-web-play__action" data-web-play-ep-next href="/video/3520/ep-2/">下一集</a>
+	<div class="hg-web-play__ep-grid" data-web-play-ep-grid>
+	<a class="hg-web-play__ep is-active" href="/video/3520/" data-ep-id="1">01</a><a class="hg-web-play__ep" href="/video/3520/ep-2/" data-ep-id="2">02</a><a class="hg-web-play__ep" href="/video/3520/ep-3/" data-ep-id="3">03</a><a class="hg-web-play__ep" href="/video/3520/ep-4/" data-ep-id="4">04</a><a class="hg-web-play__ep" href="/video/3520/ep-5/" data-ep-id="5">05</a><a class="hg-web-play__ep" href="/video/3520/ep-6/" data-ep-id="6">06</a>
+	</div>
+	<aside class="hg-web-play__recommend"><a href="/video/12/" data-ep-id="1">相关推荐</a></aside>
+	</section>`
+	episodes := parseHuangguoAIEpisodes(rawHTML, "https://huangguoai.com/detail/3520/", "3520", 6)
+	if len(episodes) != 6 {
+		t.Fatalf("episodes = %d, want 6: %+v", len(episodes), episodes)
+	}
+	wantKeys := []string{"ep-1", "ep-2", "ep-3", "ep-4", "ep-5", "ep-6"}
+	for i, episode := range episodes {
+		if episode.Index != i+1 || episode.Key != wantKeys[i] {
+			t.Fatalf("episode %d = %+v, want key %q index %d", i, episode, wantKeys[i], i+1)
+		}
+	}
+	if !strings.HasSuffix(episodes[0].URL, "/video/3520/") {
+		t.Fatalf("first episode URL lost its bare link: %+v", episodes[0])
+	}
+}
+
+func TestHuangguoAIEpisodesBareFirstEpisodeKeepsContiguousNumbering(t *testing.T) {
+	rawHTML := `<a class="hg-web-play__action" data-web-play-ep-next href="/video/own-7/ep-2/">下一集</a>` +
+		`<a href="/video/own-7/" title="第1集">第1集</a>` +
+		`<a href="/video/own-7/ep-2/" title="第2集">第2集</a>` +
+		`<a href="/video/own-7/ep-3/" title="第3集">第3集</a>`
+	episodes := parseHuangguoAIEpisodes(rawHTML, "https://huangguoai.com/detail/own-7/", "own-7", 3)
+	if len(episodes) != 3 {
+		t.Fatalf("episodes = %d, want 3: %+v", len(episodes), episodes)
+	}
+	for i, episode := range episodes {
+		if episode.Index != i+1 {
+			t.Fatalf("episode %d index = %d, want %d: %+v", i, episode.Index, i+1, episodes)
+		}
+	}
+	if episodes[0].Key != "ep-1" || episodes[2].Key != "ep-3" {
+		t.Fatalf("episode keys changed: %+v", episodes)
+	}
+}
+
+func TestHuangguoAIEpisodesRenumberWhenSourceNumberingStartsAtTwo(t *testing.T) {
+	rawHTML := `<a href="/video/own-9/ep-2/" title="第2集">第2集</a>` +
+		`<a href="/video/own-9/ep-3/" title="第3集">第3集</a>` +
+		`<a href="/video/own-9/ep-4/" title="第4集">第4集</a>`
+	episodes := parseHuangguoAIEpisodes(rawHTML, "https://huangguoai.com/detail/own-9/", "own-9", 0)
+	if len(episodes) != 3 {
+		t.Fatalf("episodes = %d, want 3: %+v", len(episodes), episodes)
+	}
+	for i, episode := range episodes {
+		if episode.Index != i+1 {
+			t.Fatalf("episode %d index = %d, want %d: %+v", i, episode.Index, i+1, episodes)
+		}
+	}
+	if episodes[0].Key != "ep-2" || episodes[2].Key != "ep-4" {
+		t.Fatalf("source keys must be preserved: %+v", episodes)
+	}
+}
+
+func TestHuangguoAIEpisodesTruncateAfterSorting(t *testing.T) {
+	var body strings.Builder
+	for i := 6; i >= 1; i-- {
+		n := strconv.Itoa(i)
+		body.WriteString(`<a href="/video/own-8/ep-` + n + `" title="第` + n + `集">第` + n + `集</a>`)
+	}
+	episodes := parseHuangguoAIEpisodes(body.String(), "https://huangguoai.com/detail/own-8/", "own-8", 3)
+	if len(episodes) != 3 {
+		t.Fatalf("episodes = %d, want 3: %+v", len(episodes), episodes)
+	}
+	for i, episode := range episodes {
+		wantKey := "ep-" + strconv.Itoa(i+1)
+		if episode.Index != i+1 || episode.Key != wantKey {
+			t.Fatalf("episode %d = %+v, want key %q index %d", i, episode, wantKey, i+1)
+		}
 	}
 }

@@ -61,13 +61,14 @@ type yeguoAccessCall struct {
 }
 
 type yeguoAPIClient struct {
-	downloader *Downloader
-	site       string
-	mu         sync.Mutex
-	access     *yeguoAccess
-	pending    *yeguoAccessCall
-	httpOnce   sync.Once
-	httpClient *http.Client
+	downloader   *Downloader
+	site         string
+	mu           sync.Mutex
+	access       *yeguoAccess
+	pending      *yeguoAccessCall
+	httpMu       sync.Mutex
+	httpClient   *http.Client
+	httpInsecure bool
 }
 
 func (d *Downloader) yeguoClient() *yeguoAPIClient {
@@ -245,32 +246,39 @@ func (client *yeguoAPIClient) configuration(ctx context.Context) (*yeguoAccess, 
 }
 
 func (client *yeguoAPIClient) requestClient() *http.Client {
-	client.httpOnce.Do(func() {
-		if client.downloader.client != nil && client.downloader.client.Transport != nil {
-			if _, production := client.downloader.client.Transport.(*huangguoBrowserTransport); !production {
-				client.httpClient = &http.Client{Transport: client.downloader.client.Transport}
-				return
+	client.httpMu.Lock()
+	defer client.httpMu.Unlock()
+	insecure := client.downloader.insecureTLS()
+	if client.httpClient != nil && client.httpInsecure == insecure {
+		return client.httpClient
+	}
+	if client.httpClient != nil {
+		client.httpClient.CloseIdleConnections()
+		client.httpClient = nil
+	}
+	client.httpInsecure = insecure
+	if downstream := client.downloader.client; downstream != nil && downstream.Transport != nil && !isProductionNetworkTransport(downstream.Transport) {
+		client.httpClient = &http.Client{Transport: downstream.Transport}
+		return client.httpClient
+	}
+	transport := http.DefaultTransport.(*http.Transport).Clone()
+	transport.TLSClientConfig = &tls.Config{MinVersion: tls.VersionTLS12}
+	if insecure {
+		transport.TLSClientConfig = transport.TLSClientConfig.Clone()
+		transport.TLSClientConfig.InsecureSkipVerify = true
+	}
+	if client.downloader.proxyRouter != nil {
+		transport.Proxy = client.downloader.proxyRouter.proxy
+	}
+	client.httpClient = &http.Client{
+		Transport: transport,
+		CheckRedirect: func(request *http.Request, via []*http.Request) error {
+			if len(via) >= 10 {
+				return errors.New("野果接口重定向次数过多")
 			}
-		}
-		transport := http.DefaultTransport.(*http.Transport).Clone()
-		transport.TLSClientConfig = &tls.Config{MinVersion: tls.VersionTLS12}
-		if client.downloader.cfg.InsecureTLS {
-			transport.TLSClientConfig = transport.TLSClientConfig.Clone()
-			transport.TLSClientConfig.InsecureSkipVerify = true
-		}
-		if client.downloader.proxyRouter != nil {
-			transport.Proxy = client.downloader.proxyRouter.proxy
-		}
-		client.httpClient = &http.Client{
-			Transport: transport,
-			CheckRedirect: func(request *http.Request, via []*http.Request) error {
-				if len(via) >= 10 {
-					return errors.New("野果接口重定向次数过多")
-				}
-				return nil
-			},
-		}
-	})
+			return nil
+		},
+	}
 	return client.httpClient
 }
 

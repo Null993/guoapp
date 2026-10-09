@@ -2,6 +2,7 @@ package core
 
 import (
 	"context"
+	"crypto/tls"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -28,9 +29,19 @@ type dnsResolver struct {
 	endpoints []string
 }
 
+func lookupTLSConfig(base *tls.Config) *tls.Config {
+	if base == nil {
+		return nil
+	}
+	config := base.Clone()
+	config.ServerName = ""
+	return config
+}
+
 func newDNSResolver(transport *http.Transport) *dnsResolver {
+	base := transport.TLSClientConfig
 	lookupTransport := transport.Clone()
-	lookupTransport.TLSClientConfig = nil
+	lookupTransport.TLSClientConfig = lookupTLSConfig(base)
 	return &dnsResolver{
 		client: &http.Client{Transport: lookupTransport, Timeout: 4 * time.Second},
 		cache:  map[string]dnsCacheEntry{}, inFlight: map[string]chan struct{}{},

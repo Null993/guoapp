@@ -235,6 +235,7 @@ class NativeRepository extends AppRepository {
       await _call({'action': 'clearAllSourceAccess'});
     } catch (_) {}
   }
+
   final _readOwner = DateTime.now().microsecondsSinceEpoch.toString();
   int _readSequence = 0;
   final _activeReads = <String, int>{};
@@ -618,12 +619,7 @@ class NativeRepository extends AppRepository {
           action == 'danmaku') {
         _authorize('hongguo');
       }
-      if ({
-        'catalog',
-        'cached',
-        'categories',
-        'sourceJob',
-      }.contains(action)) {
+      if ({'catalog', 'cached', 'categories', 'sourceJob'}.contains(action)) {
         _authorize(input['source'] as String);
       }
       if ({
@@ -634,16 +630,21 @@ class NativeRepository extends AppRepository {
         'clearSourceAccess',
       }.contains(action)) {
         final source = input['source'] as String;
-        final visibleForManagement = access == null ||
+        final visibleForManagement =
+            access == null ||
             access!.managedSources.any((site) => site.id == source) ||
             action == 'cancelSourceJob' &&
                 access!.profile.allows(source) &&
                 (SourceSite.isPrimary(source) || access!.sourcesUnlocked);
-        if (!SourceSite.isAvailable(source) || !visibleForManagement) {
+        if (!SourceSite.isAvailable(source)) {
+          throw AppFailure('当前版本不包含此站源');
+        }
+        if (!visibleForManagement) {
           throw AppFailure('当前用户没有此站源管理权限');
         }
         if ({'saveSourceAccess', 'clearSourceAccess'}.contains(action) &&
-            access != null && !access!.profile.admin) {
+            access != null &&
+            !access!.profile.admin) {
           throw AppFailure('仅管理员可以设置站点会话');
         }
       }
