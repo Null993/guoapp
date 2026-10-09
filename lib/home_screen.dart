@@ -526,16 +526,24 @@ class _HomeScreenState extends State<HomeScreen> {
         if (query != _submittedQuery) _items = [];
       }
     });
-    void accept(CatalogPage result, {bool cached = false}) {
+    void accept(
+      CatalogPage result, {
+      bool cached = false,
+      bool partial = false,
+    }) {
       if (!mounted || generation != _generation) return;
+      final pending = partial || (cached && !result.fresh);
       setState(() {
         _items = result.items;
-        _hasMore = result.hasMore;
-        _submittedQuery = query;
-        _loading = cached && !result.fresh;
-        _loadingMore = false;
+        if (!partial) {
+          _hasMore = result.hasMore;
+          _submittedQuery = query;
+        }
+        _loading = pending && !more;
+        _loadingMore = more && pending;
         _error = result.warning.isEmpty ? null : result.warning;
       });
+      if (partial) return;
       unawaited(
         saveUserChange(context, () => widget.store.refreshDramas(result.items)),
       );
@@ -551,6 +559,7 @@ class _HomeScreenState extends State<HomeScreen> {
         force: force,
         cacheOnly: cacheOnly,
         onCached: (result) => accept(result, cached: true),
+        onProgress: (result) => accept(result, partial: true),
       );
       accept(result);
     } catch (error) {

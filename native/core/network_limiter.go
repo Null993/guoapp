@@ -2,8 +2,12 @@ package core
 
 import (
 	"context"
+	"crypto/tls"
+	"crypto/x509"
+	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"strconv"
 	"strings"
@@ -21,6 +25,29 @@ type requestBackoff struct {
 	until  time.Time
 	status int
 	reason string
+	verify bool
+}
+
+type sourceTransientError struct {
+	message string
+	status  int
+}
+
+func (failure *sourceTransientError) Error() string { return failure.message }
+
+func isPermanentSourceError(err error) bool {
+	var verification *tls.CertificateVerificationError
+	if errors.As(err, &verification) {
+		return true
+	}
+	var unknownAuthority x509.UnknownAuthorityError
+	var hostname x509.HostnameError
+	var invalid x509.CertificateInvalidError
+	if errors.As(err, &unknownAuthority) || errors.As(err, &hostname) || errors.As(err, &invalid) {
+		return true
+	}
+	var dns *net.DNSError
+	return errors.As(err, &dns) && dns.IsNotFound && !dns.IsTimeout && !dns.IsTemporary
 }
 
 func (backoff *requestBackoff) Error() string {
@@ -48,30 +75,35 @@ func catalogResponseBlockReason(response *http.Response, body []byte) string {
 
 func (d *Downloader) catalogResponseError(request *http.Request, response *http.Response, body []byte) error {
 	reason := catalogResponseBlockReason(response, body)
-	if d.limiter != nil && reason != "" && response.StatusCode >= 200 && response.StatusCode < 300 {
-		d.limiter.observeBlock(request, response)
-	}
-
 	host := strings.ToLower(request.URL.Hostname())
-	if d.limiter != nil && (response.StatusCode == http.StatusForbidden || response.StatusCode == http.StatusTooManyRequests || reason != "") {
+	blocked := response.StatusCode == http.StatusForbidden || response.StatusCode == http.StatusTooManyRequests || reason != ""
+	if d.limiter != nil && blocked {
+		d.limiter.observeBlock(request, response, reason != "")
 		d.limiter.mu.Lock()
 		backoffs := d.limiter.backoffs
 		if background, _ := request.Context().Value(backgroundCatalogKey{}).(bool); background && response.StatusCode != http.StatusTooManyRequests {
 			backoffs = d.limiter.backgroundBackoffs
 		}
-		if previous := backoffs[host]; previous != nil && previous.status == response.StatusCode {
+		previous := backoffs[host]
+		var result *requestBackoff
+		if previous != nil && previous.status == response.StatusCode {
 			updated := *previous
 			if reason != "" {
-				updated.reason = reason
+				updated.reason, updated.verify = reason, true
 			}
 			backoffs[host] = &updated
-			d.limiter.mu.Unlock()
-			return &updated
+			result = &updated
 		}
 		d.limiter.mu.Unlock()
+		if result != nil {
+			return result
+		}
 	}
 	if reason != "" {
 		return fmt.Errorf("%s HTTP %d：%s", host, response.StatusCode, reason)
+	}
+	if response.StatusCode == http.StatusTooManyRequests || response.StatusCode == http.StatusRequestTimeout || response.StatusCode >= 500 {
+		return &sourceTransientError{message: fmt.Sprintf("%s HTTP %d", host, response.StatusCode), status: response.StatusCode}
 	}
 	return fmt.Errorf("%s HTTP %d", host, response.StatusCode)
 }
@@ -190,13 +222,14 @@ func (limiter *requestLimiter) acquire(ctx context.Context, request *http.Reques
 }
 
 func (limiter *requestLimiter) observe(request *http.Request, response *http.Response) {
-	if response.StatusCode != http.StatusForbidden && response.StatusCode != http.StatusTooManyRequests && !strings.EqualFold(response.Header.Get("Cf-Mitigated"), "challenge") {
+	challenge := strings.EqualFold(response.Header.Get("Cf-Mitigated"), "challenge")
+	if response.StatusCode != http.StatusForbidden && response.StatusCode != http.StatusTooManyRequests && !challenge {
 		return
 	}
-	limiter.observeBlock(request, response)
+	limiter.observeBlock(request, response, challenge)
 }
 
-func (limiter *requestLimiter) observeBlock(request *http.Request, response *http.Response) {
+func (limiter *requestLimiter) observeBlock(request *http.Request, response *http.Response, verify bool) {
 	delay := time.Minute
 	if seconds, err := strconv.Atoi(response.Header.Get("Retry-After")); err == nil && seconds > 0 {
 		delay = time.Duration(seconds) * time.Second
@@ -213,7 +246,11 @@ func (limiter *requestLimiter) observeBlock(request *http.Request, response *htt
 
 		backoffs = limiter.backgroundBackoffs
 	}
-	backoffs[host] = &requestBackoff{host: host, until: time.Now().Add(delay), status: response.StatusCode}
+	until := time.Now().Add(delay)
+	if previous := backoffs[host]; previous != nil && previous.until.After(until) {
+		until = previous.until
+	}
+	backoffs[host] = &requestBackoff{host: host, until: until, status: response.StatusCode, verify: verify}
 	limiter.notifyLocked()
 	limiter.mu.Unlock()
 }
@@ -249,6 +286,14 @@ func (d *Downloader) doPreparedCatalogRequest(request *http.Request, timeout tim
 	}
 	if prepare != nil {
 		prepare(request)
+	}
+	if access, configured := d.accessForRequest(request); configured {
+		if access.Cookie != "" {
+			request.Header.Set("Cookie", access.Cookie)
+		}
+		if access.UserAgent != "" {
+			request.Header.Set("User-Agent", access.UserAgent)
+		}
 	}
 	response, err := d.client.Do(request)
 	if err != nil {

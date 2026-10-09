@@ -9,79 +9,29 @@ import 'models.dart';
 import 'player_screen.dart';
 import 'widgets.dart';
 
+final _openingDramas = <String>{};
+
 Future<void> openPlaybackDirectly(
   BuildContext context, {
   required Drama drama,
   required AppRepository repository,
   required LocalStore store,
 }) async {
-  final profileEpoch = store.profileEpoch;
+  if (!context.mounted || !store.allowsSource(drama.source)) return;
+  final key = '${identityHashCode(store)}:${store.profileEpoch}:${drama.id}';
+  if (!_openingDramas.add(key)) return;
   try {
-    final detail = await repository.detail(drama);
-    if (!context.mounted || profileEpoch != store.profileEpoch) return;
-    final mergedDrama = repository.catalogUpdates
-        .current(drama)
-        .merge(detail.drama);
-    final merged = DramaDetail(
-      mergedDrama,
-      detail.episodes,
-      warning: detail.warning,
-    );
-    repository.catalogUpdates.publish(mergedDrama, retryCover: true);
-    await saveUserChange(context, () => store.refreshDrama(mergedDrama));
-    if (!context.mounted || profileEpoch != store.profileEpoch) return;
-    if (merged.episodes.isEmpty) {
-      throw AppFailure('暂时没有可播放的集数');
-    }
-    final watched = store.watched(mergedDrama.id);
-    final index = resumeEpisodeIndex(merged.episodes, watched);
-    final episode = merged.episodes[index];
-    if (episode.vip && mergedDrama.source != SourceSite.dsd.id) {
-      final accepted = await showDialog<bool>(
-        context: context,
-        builder: (context) => AlertDialog(
-          title: const Text('这是一集 VIP 内容'),
-          content: const Text('站源可能只提供试看或限制播放。'),
-          actions: [
-            TextButton(
-              onPressed: () => Navigator.pop(context, false),
-              child: const Text('取消'),
-            ),
-            FilledButton(
-              onPressed: () => Navigator.pop(context, true),
-              child: const Text('尝试播放'),
-            ),
-          ],
-        ),
-      );
-      if (accepted != true || !context.mounted) return;
-    }
-    final position =
-        watched?.episode == episode.number && watched?.finished == false
-        ? watched!.position
-        : 0.0;
-    if (!context.mounted || profileEpoch != store.profileEpoch) return;
     await Navigator.of(context).push(
       MaterialPageRoute<void>(
-        builder: (_) => PlayerScreen(
-          detail: merged,
-          initialIndex: index,
-          initialPosition: position,
+        builder: (_) => PlaybackLaunchScreen(
+          drama: drama,
           repository: repository,
           store: store,
         ),
       ),
     );
-  } catch (error) {
-    if (!context.mounted || profileEpoch != store.profileEpoch) return;
-    repository.catalogUpdates.publish(
-      repository.catalogUpdates.current(drama),
-      retryCover: true,
-    );
-    final message = error is AppFailure ? error.message : '暂时无法播放，请重试';
-    ScaffoldMessenger.of(
-      context,
-    ).showSnackBar(SnackBar(content: Text(message)));
+  } finally {
+    _openingDramas.remove(key);
   }
 }
 

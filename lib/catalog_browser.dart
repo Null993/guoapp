@@ -163,6 +163,7 @@ class CatalogBrowser {
     bool useCache = false,
     bool cacheOnly = false,
     void Function(CatalogPage)? onCached,
+    void Function(CatalogPage)? onProgress,
   }) async {
     if (cacheOnly && (more || force || query.trim().isNotEmpty)) {
       throw AppFailure('缓存读取不能同时请求搜索或续页');
@@ -287,6 +288,9 @@ class CatalogBrowser {
         entry.hasMore = query.isEmpty || SourceSite.byId(source).pagedSearch;
         entry.fresh = false;
         failures[source] = error.toString();
+      }
+      if (generation == session.generation) {
+        onProgress?.call(snapshot());
       }
     });
     final result = snapshot();

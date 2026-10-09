@@ -50,6 +50,7 @@ class SourceStatus {
       hasMore = json['hasMore'] == true,
       updatedAt = sourceTime(json['updatedAt']),
       running = json['running'] == true,
+      resumable = json['resumable'] == true,
       operation = json['operation'] as String? ?? '',
       stage = json['stage'] as String? ?? '',
       completed = intValue(json['completed']),
@@ -68,7 +69,7 @@ class SourceStatus {
 
   final String source, operation, stage, error, storageError;
   final int count, page, completed, total, added, unknownVip;
-  final bool hasMore, running;
+  final bool hasMore, running, resumable;
   final DateTime? updatedAt, startedAt, finishedAt, retryAt;
   final SourceHealth? health;
 

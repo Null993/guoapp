@@ -4,6 +4,7 @@ import io.flutter.embedding.android.FlutterActivity
 import android.app.UiModeManager
 import android.app.ActivityManager
 import android.app.PictureInPictureParams
+import android.app.AlertDialog
 import android.os.Build
 import android.os.Bundle
 import android.os.BatteryManager
@@ -20,8 +21,12 @@ import android.net.ConnectivityManager
 import android.net.Uri
 import android.util.Rational
 import android.view.InputDevice
+import android.view.ViewGroup
 import android.view.WindowManager
 import android.provider.Settings
+import android.webkit.CookieManager
+import android.webkit.WebView
+import android.widget.FrameLayout
 import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.plugin.common.MethodChannel
 
@@ -221,6 +226,45 @@ class MainActivity : FlutterActivity() {
                                 }
                             } else {
                                 result.error("invalid_url", "播放地址为空", null)
+                            }
+                        }
+                        "verifySource" -> {
+                            val address = call.argument<String>("url").orEmpty()
+                            val parsed = Uri.parse(address)
+                            if (parsed.scheme != "https" || parsed.host.isNullOrEmpty()) {
+                                result.error("invalid_url", "验证地址必须是 HTTPS 站点", null)
+                            } else {
+                                val origin = "${parsed.scheme}://${parsed.authority}/"
+                                val browser = WebView(this)
+                                browser.settings.javaScriptEnabled = true
+                                browser.settings.domStorageEnabled = true
+                                CookieManager.getInstance().setAcceptCookie(true)
+                                val container = FrameLayout(this)
+                                container.addView(browser, FrameLayout.LayoutParams(
+                                    ViewGroup.LayoutParams.MATCH_PARENT,
+                                    (480 * resources.displayMetrics.density).toInt()
+                                ))
+                                var answered = false
+                                fun answer(value: Map<String, String>?) {
+                                    if (answered) return
+                                    answered = true
+                                    result.success(value)
+                                }
+                                AlertDialog.Builder(this)
+                                    .setTitle("完成站点人工验证")
+                                    .setView(container)
+                                    .setNegativeButton("取消") { _, _ -> answer(null) }
+                                    .setPositiveButton("验证完成") { _, _ ->
+                                        answer(mapOf(
+                                            "origin" to "${parsed.scheme}://${parsed.authority}",
+                                            "cookie" to CookieManager.getInstance().getCookie(origin).orEmpty(),
+                                            "userAgent" to browser.settings.userAgentString.orEmpty()
+                                        ))
+                                    }
+                                    .setOnCancelListener { answer(null) }
+                                    .setOnDismissListener { browser.destroy() }
+                                    .show()
+                                browser.loadUrl(origin)
                             }
                         }
                         else -> result.notImplemented()

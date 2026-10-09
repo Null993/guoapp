@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:io';
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -72,7 +73,7 @@ class _SourcesScreenState extends State<SourcesScreen> {
     final epoch = widget.store.profileEpoch;
     try {
       await Future.wait([
-        for (final source in widget.store.sources)
+        for (final source in widget.store.managedSources)
           (() async {
             final revision = _revisions[source.id] ?? 0;
             try {
@@ -158,11 +159,271 @@ class _SourcesScreenState extends State<SourcesScreen> {
     }
   }
 
+  Future<void> _configure(
+    SourceSite source, {
+    bool? removed,
+    bool? enabled,
+    String? name,
+  }) async {
+    try {
+      if (removed == true || enabled == false) {
+        await _cancelSource(source);
+      }
+      await widget.store.configureSource(
+        source.id,
+        removed: removed,
+        enabled: enabled,
+        name: name,
+      );
+      if (mounted) setState(() {});
+    } catch (error) {
+      if (mounted) _showMessage(error.toString());
+    }
+  }
+
+  Future<void> _restoreSource(String id) =>
+      _configure(SourceSite.byId(id), removed: false, enabled: true);
+
+  Future<void> _cancelSource(SourceSite source) async {
+    final wasRunning =
+        _pending.contains(source.id) || _statuses[source.id]?.running == true;
+    try {
+      final status = await widget.repository.cancelSourceJob(source.id);
+      if (mounted) setState(() => _statuses[source.id] = status);
+    } catch (error) {
+      if (mounted && wasRunning) _showMessage(error.toString());
+    }
+  }
+
+  void _showMessage(String message) {
+    final messenger = ScaffoldMessenger.of(context);
+    messenger.showSnackBar(SnackBar(content: Text(message)));
+  }
+
+  Future<void> _rename(SourceSite source) async {
+    final controller = TextEditingController(text: source.name);
+    final name = await showDialog<String>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: Text('编辑${source.name}名称'),
+        content: TextField(
+          controller: controller,
+          maxLength: 30,
+          autofocus: true,
+          decoration: const InputDecoration(labelText: '显示名称'),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text('取消'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(context, controller.text),
+            child: const Text('保存'),
+          ),
+        ],
+      ),
+    );
+    controller.dispose();
+    if (name != null && mounted) await _configure(source, name: name);
+  }
+
+  Future<void> _sourceAccess(SourceSite source) async {
+    final origin = TextEditingController();
+    final cookie = TextEditingController();
+    final userAgent = TextEditingController();
+    final token = TextEditingController();
+    final deviceId = TextEditingController();
+    try {
+      final info = await widget.repository.sourceAccess(source.id);
+      if (!mounted) return;
+      final url = info['url'] as String? ?? '';
+      origin.text = info['origin'] as String? ?? url;
+      final saved = await showDialog<bool>(
+        context: context,
+        builder: (context) => AlertDialog(
+          title: Text('${source.name}验证与授权'),
+          content: SizedBox(
+            width: 560,
+            child: SingleChildScrollView(
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Text('站点地址：$url'),
+                  const SizedBox(height: 8),
+                  const Text(
+                    '仅导入本人已完成验证或已获授权的站点会话。会话只在本次运行内有效，关闭应用后需重新导入。',
+                  ),
+                  TextField(
+                    controller: origin,
+                    decoration: const InputDecoration(
+                      labelText: '验证站点 HTTPS 地址',
+                    ),
+                  ),
+                  TextField(
+                    controller: cookie,
+                    maxLines: 2,
+                    decoration: const InputDecoration(
+                      labelText: '同域 Cookie',
+                    ),
+                  ),
+                  TextField(
+                    controller: userAgent,
+                    decoration: const InputDecoration(
+                      labelText: '浏览器 User-Agent（可选）',
+                    ),
+                  ),
+                  if (source.id == 'huangdou') ...[
+                    TextField(
+                      controller: token,
+                      decoration: const InputDecoration(
+                        labelText: '本人站点授权令牌（可选）',
+                      ),
+                    ),
+                    TextField(
+                      controller: deviceId,
+                      decoration: const InputDecoration(
+                        labelText: '该令牌对应设备标识（可选）',
+                      ),
+                    ),
+                  ],
+                  if (Platform.isAndroid)
+                    TextButton.icon(
+                      onPressed: () async {
+                        try {
+                          final result = await _verifySource(origin.text);
+                          if (result == null || !context.mounted) return;
+                          origin.text = result['origin'] ?? origin.text;
+                          cookie.text = result['cookie'] ?? '';
+                          userAgent.text = result['userAgent'] ?? '';
+                        } catch (error) {
+                          if (context.mounted) _showMessage(error.toString());
+                        }
+                      },
+                      icon: const Icon(Icons.open_in_browser),
+                      label: const Text('打开人工验证页'),
+                    ),
+                  if (Platform.isWindows)
+                    TextButton.icon(
+                      onPressed: () => _openInBrowser(origin.text),
+                      icon: const Icon(Icons.open_in_browser),
+                      label: const Text('在浏览器打开，验证后粘贴同域 Cookie 与 UA'),
+                    ),
+                  const Padding(
+                    padding: EdgeInsets.only(top: 8),
+                    child: Text(
+                      'Android 可在应用内完成站点验证并自动读取同域 Cookie；Windows 与 iOS 请在浏览器完成验证后，手工粘贴同域 Cookie 与 User-Agent。',
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(context),
+              child: const Text('取消'),
+            ),
+            if (info['configured'] == true)
+              TextButton(
+                onPressed: () => _clearAccess(context, source),
+                child: const Text('清除本次会话'),
+              ),
+            FilledButton(
+              onPressed: () => Navigator.pop(context, true),
+              child: const Text('保存并继续'),
+            ),
+          ],
+        ),
+      );
+      if (saved == true) {
+        await _saveSourceAccess(
+          source,
+          origin: origin,
+          cookie: cookie,
+          userAgent: userAgent,
+          token: token,
+          deviceId: deviceId,
+        );
+      }
+    } catch (error) {
+      if (mounted) _showMessage(error.toString());
+    } finally {
+      origin.dispose();
+      cookie.dispose();
+      userAgent.dispose();
+      token.dispose();
+      deviceId.dispose();
+    }
+  }
+
+  Future<Map<String, String>?> _verifySource(String url) =>
+      const MethodChannel('duanju/device').invokeMapMethod<String, String>(
+        'verifySource',
+        {'url': url.trim()},
+      );
+
+  Future<void> _openInBrowser(String url) async {
+    final address = url.trim();
+    if (address.isEmpty) {
+      _showMessage('请先填写验证站点 HTTPS 地址');
+      return;
+    }
+    try {
+      await Process.start('explorer.exe', [address]);
+    } catch (error) {
+      if (mounted) _showMessage(error.toString());
+    }
+  }
+
+  Future<void> _saveSourceAccess(
+    SourceSite source, {
+    required TextEditingController origin,
+    required TextEditingController cookie,
+    required TextEditingController userAgent,
+    required TextEditingController token,
+    required TextEditingController deviceId,
+  }) async {
+    await widget.repository.saveSourceAccess(
+      source.id,
+      origin: origin.text.trim(),
+      cookie: cookie.text.trim(),
+      userAgent: userAgent.text.trim(),
+      accessToken: token.text.trim(),
+      deviceId: deviceId.text.trim(),
+    );
+    if (mounted) await _resumeAfterAccess(source);
+  }
+
+  Future<void> _resumeAfterAccess(SourceSite source) async {
+    if (!widget.store.sourceEnabled(source.id)) return;
+    SourceStatus? status = _statuses[source.id];
+    try {
+      status = await widget.repository.sourceStatus(source.id);
+    } catch (_) {}
+    if (status == null || status.running) return;
+    if (!_resumableJob(status)) return;
+    await _run(source, 'resume');
+  }
+
+  bool _resumableJob(SourceStatus status) =>
+      status.resumable ||
+      status.operation == 'update' && status.error.isNotEmpty;
+
+  Future<void> _clearAccess(BuildContext context, SourceSite source) async {
+    try {
+      await widget.repository.clearSourceAccess(source.id);
+      if (context.mounted) Navigator.pop(context, false);
+    } catch (error) {
+      if (context.mounted) _showMessage(error.toString());
+    }
+  }
+
   @override
   Widget build(BuildContext context) => AnimatedBuilder(
     animation: widget.store,
     builder: (context, _) {
-      final sources = widget.store.sources.toList()
+      final sources = widget.store.managedSources.toList()
         ..sort((a, b) {
           final aFirst = a.id == widget.initialSource ? 0 : 1;
           final bFirst = b.id == widget.initialSource ? 0 : 1;
@@ -174,7 +435,29 @@ class _SourcesScreenState extends State<SourcesScreen> {
           ? viewPaddingBottom
           : paddingBottom;
       return Scaffold(
-        appBar: AppBar(title: const Text('站源管理')),
+        appBar: AppBar(
+          title: const Text('站源管理'),
+          actions: [
+            if (widget.store.profile.admin)
+              PopupMenuButton<String>(
+                tooltip: '添加内置站源',
+                icon: const Icon(Icons.add_rounded),
+                onSelected: _restoreSource,
+                itemBuilder: (_) => [
+                  for (final source in widget.store.removedSources)
+                    PopupMenuItem(
+                      value: source.id,
+                      child: Text('恢复 ${source.name}'),
+                    ),
+                  if (widget.store.removedSources.isEmpty)
+                    const PopupMenuItem(
+                      enabled: false,
+                      child: Text('所有内置站源已添加'),
+                    ),
+                ],
+              ),
+          ],
+        ),
         body: Center(
           child: ConstrainedBox(
             constraints: const BoxConstraints(maxWidth: 960),
@@ -186,7 +469,7 @@ class _SourcesScreenState extends State<SourcesScreen> {
                   const Padding(
                     padding: EdgeInsets.only(bottom: 16),
                     child: Text(
-                      '各站源可分别更新和检测。更新会查找新剧、继续加载一页历史内容，并分批补齐资料；离开此页后任务继续。',
+                      '添加可恢复当前版本内置解析器；可编辑显示名称、启停或移除。更新会持续推进目录和资料，离开此页后继续运行。',
                     ),
                   ),
                   if (sources.isEmpty)
@@ -230,9 +513,10 @@ class _SourcesScreenState extends State<SourcesScreen> {
     final status = _statuses[source.id];
     final pending = _pending.contains(source.id);
     final busy = pending || status?.running == true;
+    final active = widget.store.sourceEnabled(source.id);
     final seconds = status?.retrySeconds ?? 0;
-    final enabled =
-        !busy && seconds == 0 && widget.repository.supportsSourceManagement;
+    final manageable = widget.repository.supportsSourceManagement;
+    final enabled = active && !busy && seconds == 0 && manageable;
     final error = _errors[source.id] ?? status?.error ?? '';
     final health = status?.health;
     final healthExpanded = _expandedHealth.contains(source.id);
@@ -256,10 +540,36 @@ class _SourcesScreenState extends State<SourcesScreen> {
                   ),
                 ),
                 Text('${status?.count ?? 0} 部'),
+                if (widget.store.profile.admin) ...[
+                  Switch(
+                    value: active,
+                    onChanged: (value) => _configure(source, enabled: value),
+                  ),
+                  PopupMenuButton<String>(
+                    tooltip: '${source.name}配置',
+                    onSelected: (value) {
+                      if (value == 'rename') {
+                        unawaited(_rename(source));
+                      } else if (value == 'remove') {
+                        unawaited(_configure(source, removed: true));
+                      }
+                    },
+                    itemBuilder: (_) => const [
+                      PopupMenuItem(value: 'rename', child: Text('编辑名称')),
+                      PopupMenuItem(value: 'remove', child: Text('移除站源')),
+                    ],
+                  ),
+                  IconButton(
+                    tooltip: '查看地址与人工验证',
+                    onPressed: () => _sourceAccess(source),
+                    icon: const Icon(Icons.verified_user_outlined),
+                  ),
+                ],
               ],
             ),
             const SizedBox(height: 8),
             Text('最近更新：${sourceTimestamp(status?.updatedAt)}'),
+            if (!active) const Text('已停用，浏览、搜索、播放与更新均暂停'),
             if (status != null && status.count > 0)
               Text(
                 '已加载至第 ${status.page} 页${status.hasMore ? ' · 可继续加载' : ' · 当前分页已加载完'}',
@@ -276,6 +586,12 @@ class _SourcesScreenState extends State<SourcesScreen> {
                   icon: const Icon(Icons.sync_rounded),
                   label: const Text('更新'),
                 ),
+                if (status != null && _resumableJob(status))
+                  OutlinedButton.icon(
+                    onPressed: enabled ? () => _run(source, 'resume') : null,
+                    icon: const Icon(Icons.play_arrow_rounded),
+                    label: const Text('接着更新'),
+                  ),
                 OutlinedButton.icon(
                   key: ValueKey('check-${source.id}'),
                   onPressed: enabled ? () => _run(source, 'check') : null,
@@ -357,8 +673,7 @@ class _SourcesScreenState extends State<SourcesScreen> {
                     ),
                     TextButton.icon(
                       key: ValueKey('save-${source.id}'),
-                      onPressed:
-                          !busy && widget.repository.supportsSourceManagement
+                      onPressed: manageable && !busy && active
                           ? () => _run(source, 'retrySave')
                           : null,
                       icon: const Icon(Icons.save_outlined),
