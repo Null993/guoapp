@@ -123,6 +123,15 @@ type requestLimiter struct {
 
 type backgroundCatalogKey struct{}
 
+const nativeBackgroundRequestTimeout = 30 * time.Second
+
+func backgroundRequestTimeout(timeout time.Duration) time.Duration {
+	if timeout <= 0 || timeout > nativeBackgroundRequestTimeout {
+		return nativeBackgroundRequestTimeout
+	}
+	return timeout
+}
+
 func newRequestLimiter(concurrency int, interval time.Duration) *requestLimiter {
 	if concurrency < 1 {
 		concurrency = 1
@@ -271,8 +280,8 @@ func (d *Downloader) doCatalogRequestWithTimeout(request *http.Request, timeout 
 }
 
 func (d *Downloader) doPreparedCatalogRequest(request *http.Request, timeout time.Duration, prepare func(*http.Request)) (*http.Response, error) {
-	if background, _ := request.Context().Value(backgroundCatalogKey{}).(bool); background && (timeout <= 0 || timeout > 8*time.Second) {
-		timeout = 8 * time.Second
+	if background, _ := request.Context().Value(backgroundCatalogKey{}).(bool); background {
+		timeout = backgroundRequestTimeout(timeout)
 	}
 	release, err := d.limiter.acquire(request.Context(), request)
 	if err != nil {

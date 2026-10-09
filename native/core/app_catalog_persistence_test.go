@@ -12,6 +12,7 @@ import (
 	"reflect"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -349,10 +350,11 @@ func TestNativeCatalogSizeLimitPreservesPreviousFile(t *testing.T) {
 
 func TestNativeCatalogMetadataSaveExcludesInFlightCursor(t *testing.T) {
 	paused, release := make(chan struct{}), make(chan struct{})
+	var pausedOnce sync.Once
 	transport := sourceFixtureTransport(func(request *http.Request) (*http.Response, error) {
 		payload := nativeHongguoRequestForTest(t, request)
 		if payload.Offset == 18 && payload.Scene == "comic_series" {
-			close(paused)
+			pausedOnce.Do(func() { close(paused) })
 			select {
 			case <-release:
 			case <-request.Context().Done():

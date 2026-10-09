@@ -594,7 +594,7 @@ func (client *yeguoAPIClient) call(ctx context.Context, route string, parameters
 		request.Header.Set("Referer", site+"/")
 		timeout := 30 * time.Second
 		if background, _ := ctx.Value(backgroundCatalogKey{}).(bool); background {
-			timeout = 8 * time.Second
+			timeout = nativeBackgroundRequestTimeout
 		}
 		response, err := client.do(ctx, request, timeout)
 		if err != nil {

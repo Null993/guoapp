@@ -48,7 +48,7 @@ func (client *soraniAPIClient) get(ctx context.Context, route string, query url.
 	}
 	timeout := 15 * time.Second
 	if background, _ := ctx.Value(backgroundCatalogKey{}).(bool); background {
-		timeout = 8 * time.Second
+		timeout = nativeBackgroundRequestTimeout
 	}
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()

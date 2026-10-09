@@ -1,13 +1,27 @@
 import 'dart:async';
 import 'dart:io';
 
+import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:path/path.dart' as p;
 
 import 'core_bridge.dart';
 import 'local_store.dart';
 import 'models.dart';
 import 'source_status.dart';
+
+String sourceResultStamp(DateTime value) {
+  String two(int number) => number.toString().padLeft(2, '0');
+  return '${value.year}${two(value.month)}${two(value.day)}'
+      '${two(value.hour)}${two(value.minute)}${two(value.second)}';
+}
+
+String sourceResultSize(int bytes) {
+  if (bytes < 1024) return '$bytes B';
+  if (bytes < 1024 * 1024) return '${(bytes / 1024).toStringAsFixed(1)} KB';
+  return '${(bytes / (1024 * 1024)).toStringAsFixed(1)} MB';
+}
 
 String sourceTimestamp(DateTime? value) {
   if (value == null) return '尚无记录';
@@ -42,6 +56,7 @@ class _SourcesScreenState extends State<SourcesScreen> {
   final _expandedHealth = <String>{};
   Timer? _timer;
   bool _polling = false;
+  bool _transferring = false;
   int _ticks = 0;
 
   @override
@@ -198,6 +213,96 @@ class _SourcesScreenState extends State<SourcesScreen> {
   void _showMessage(String message) {
     final messenger = ScaffoldMessenger.of(context);
     messenger.showSnackBar(SnackBar(content: Text(message)));
+  }
+
+  Future<void> _exportSourceResults() async {
+    if (_transferring) return;
+    final directory = await FilePicker.getDirectoryPath(
+      dialogTitle: '选择站源结果保存目录',
+    );
+    if (directory == null || directory.isEmpty || !mounted) return;
+    final file = p.join(
+      directory,
+      'zhenguojian-source-results-${sourceResultStamp(DateTime.now())}.json',
+    );
+    setState(() => _transferring = true);
+    try {
+      final result = await widget.repository.exportSourceResults(file);
+      if (!mounted) return;
+      _showMessage(
+        '已导出 ${intValue(result['sources'])} 个站源、${intValue(result['items'])} 条目录到 '
+        '${result['path'] ?? file}（${sourceResultSize(intValue(result['bytes']))}）',
+      );
+    } catch (error) {
+      if (mounted) _showMessage(error.toString());
+    } finally {
+      if (mounted) setState(() => _transferring = false);
+    }
+  }
+
+  Future<void> _importSourceResults() async {
+    if (_transferring) return;
+    final file = await FilePicker.pickFile(
+      type: FileType.custom,
+      allowedExtensions: ['json'],
+      dialogTitle: '选择站源结果文件',
+    );
+    final filePath = file?.path;
+    if (file == null || filePath == null || filePath.isEmpty || !mounted) {
+      return;
+    }
+    final accepted = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('导入站源结果？'),
+        content: const Text(
+          '将把文件中的站源目录与更新进度合并到本机：同名的剧集补齐资料，本机分页进度更靠前时保留本机进度。'
+          '不会替换其它站源、下载任务和追剧记录，也不会导入站点会话凭据。'
+          '导入后不会自动更新，请在卡片上点「更新」或「接着更新」继续。',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('取消'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(context, true),
+            child: const Text('导入并合并'),
+          ),
+        ],
+      ),
+    );
+    if (accepted != true || !mounted) return;
+    setState(() => _transferring = true);
+    try {
+      final result = await widget.repository.importSourceResults(filePath);
+      await _refresh();
+      if (!mounted) return;
+      final details = (result['details'] as List? ?? [])
+          .whereType<Map>()
+          .map((row) {
+            final id = row['source'] as String? ?? '';
+            final name = SourceSite.isAvailable(id)
+                ? SourceSite.byId(id).name
+                : id;
+            return '$name ${intValue(row['items'])} 条';
+          })
+          .join('、');
+      final skipped = (result['skippedSources'] as List? ?? [])
+          .whereType<String>()
+          .toList();
+      final skippedItems = intValue(result['skippedItems']);
+      _showMessage(
+        '已导入 ${intValue(result['sources'])} 个站源、${intValue(result['items'])} 条目录'
+        '${details.isEmpty ? '' : '（$details）'}'
+        '${skippedItems > 0 ? '，忽略 $skippedItems 条无效条目' : ''}'
+        '${skipped.isEmpty ? '' : '；${skipped.join('、')} 在当前版本不可用，已跳过'}',
+      );
+    } catch (error) {
+      if (mounted) _showMessage(error.toString());
+    } finally {
+      if (mounted) setState(() => _transferring = false);
+    }
   }
 
   Future<void> _rename(SourceSite source) async {
@@ -438,7 +543,17 @@ class _SourcesScreenState extends State<SourcesScreen> {
         appBar: AppBar(
           title: const Text('站源管理'),
           actions: [
-            if (widget.store.profile.admin)
+            if (widget.store.profile.admin) ...[
+              IconButton(
+                tooltip: '导出站源结果',
+                onPressed: _transferring ? null : _exportSourceResults,
+                icon: const Icon(Icons.file_upload_outlined),
+              ),
+              IconButton(
+                tooltip: '导入站源结果',
+                onPressed: _transferring ? null : _importSourceResults,
+                icon: const Icon(Icons.file_download_outlined),
+              ),
               PopupMenuButton<String>(
                 tooltip: '添加内置站源',
                 icon: const Icon(Icons.add_rounded),
@@ -456,6 +571,7 @@ class _SourcesScreenState extends State<SourcesScreen> {
                     ),
                 ],
               ),
+            ],
           ],
         ),
         body: Center(

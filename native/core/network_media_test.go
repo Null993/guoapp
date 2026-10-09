@@ -18,7 +18,7 @@ func TestHuangguoMediaUsesBrowserSessionPageRefererAndPreviewToken(t *testing.T)
 	var previews, keys atomic.Int32
 	server := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.ProtoMajor != 2 || !strings.Contains(r.UserAgent(), "Chrome/150.") {
-			t.Error("media lost browser TLS/HTTP2 client")
+			t.Errorf("media lost browser TLS/HTTP2 client: proto=%d.%d ua=%q", r.ProtoMajor, r.ProtoMinor, r.UserAgent())
 		}
 		if r.URL.Path == "/video/fixture" {
 			http.SetCookie(w, &http.Cookie{Name: "fixture", Value: "session", Path: "/", Secure: true})

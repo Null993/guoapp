@@ -1,4 +1,5 @@
 import 'core_bridge.dart';
+import 'diary_service.dart';
 import 'models.dart';
 
 class PlaybackLoader {
@@ -50,10 +51,11 @@ class PlaybackLoader {
         return null;
       }
       return plan;
-    } catch (_) {
+    } catch (error) {
       if (_closed || generation != _generation) {
         return null;
       }
+      DiaryService.add('[Play] 获取播放地址失败: ${error.runtimeType}: $error');
       rethrow;
     }
   }

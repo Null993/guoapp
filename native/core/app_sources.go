@@ -15,7 +15,25 @@ import (
 
 const nativeSourceCatalogPageLimit = 1000
 
-const nativeSourceNetworkAttemptLimit = 5
+var nativeSourceRetryAttemptLimit = 8
+
+type nativeSourceRetryExhaustedError struct {
+	cause    error
+	attempts int
+}
+
+func (failure *nativeSourceRetryExhaustedError) Error() string {
+	return fmt.Sprintf("多次重试仍未成功（已重试 %d 次）：%s", failure.attempts, publicError(failure.cause).Error())
+}
+
+func (failure *nativeSourceRetryExhaustedError) Unwrap() error { return failure.cause }
+
+func newSourceRetryExhaustedError(err error, attempts int) error {
+	if err == nil {
+		return nil
+	}
+	return &nativeSourceRetryExhaustedError{cause: err, attempts: attempts}
+}
 
 type nativeSourceTask struct {
 	cancel context.CancelFunc
@@ -255,9 +273,13 @@ func (engine *nativeEngine) runSourceTask(ctx context.Context, source, operation
 		record.Running, record.FinishedAt = false, time.Now()
 		record.Stage = "已完成"
 		if err != nil {
+			var exhausted *nativeSourceRetryExhaustedError
 			switch {
 			case stopped:
 				record.Stage, record.Error = "已停止", "已保留更新内容，可稍后继续"
+				record.RetryAt = time.Time{}
+			case errors.As(err, &exhausted):
+				record.Stage, record.Error = "多次重试仍未成功", publicError(exhausted).Error()
 				record.RetryAt = time.Time{}
 			default:
 				record.Stage, record.Error = "未完成", publicError(err).Error()
@@ -291,8 +313,8 @@ func (engine *nativeEngine) runSourceTask(ctx context.Context, source, operation
 					record.Error = "站源请求超时，已保留更新内容，可继续更新"
 				}
 				if isBoundedNetworkError(err) {
-					record.Stage = "网络不可用"
-					record.Error = "网络不可达，已保留更新内容，可稍后继续更新"
+					record.Stage = "网络请求失败"
+					record.Error = fmt.Sprintf("网络请求失败（%s），已保留更新内容，可稍后继续更新", publicError(err).Error())
 					record.RetryAt = time.Time{}
 				}
 			}
@@ -361,14 +383,22 @@ func (engine *nativeEngine) runContinuousSourceUpdate(ctx context.Context, sourc
 		}
 	}
 	attempts := 0
+	runTotal := 0
+	runCompleted := 0
 	for {
 		ready, remaining, nextRetry := engine.sourceMetadataWork(source)
 		if remaining == 0 {
 			engine.changeSourceRecord(source, func(record *nativeSourceRecord) {
 				record.CatalogStarted = false
+				if runTotal > 0 {
+					record.Total, record.Completed = runTotal, runTotal
+				}
 				record.Stage = firstNonEmpty(note, "目录已完成，资料检查已结束")
 			})
 			return nil
+		}
+		if runTotal == 0 {
+			runTotal = remaining
 		}
 		if ready == 0 {
 			engine.changeSourceRecord(source, func(record *nativeSourceRecord) {
@@ -381,17 +411,25 @@ func (engine *nativeEngine) runContinuousSourceUpdate(ctx context.Context, sourc
 			engine.changeSourceRecord(source, func(record *nativeSourceRecord) { record.RetryAt = time.Time{} })
 			continue
 		}
+		runCompleted = sourceRunProgress(runTotal, remaining, runCompleted)
+		engine.changeSourceRecord(source, func(record *nativeSourceRecord) {
+			record.Total, record.Completed = runTotal, runCompleted
+		})
 		err := engine.updateSource(ctx, source, "continuousMetadata")
 		if err == nil {
 			attempts = 0
 			continue
 		}
-		var backoff *requestBackoff
-		if !errors.As(err, &backoff) {
-			attempts++
-		}
+		attempts++
 		retry, temporary := sourceRetryWait(err, attempts)
 		if !temporary {
+			if sourceRetryExhausted(err, attempts) {
+				engine.changeSourceRecord(source, func(record *nativeSourceRecord) {
+					record.Stage = "多次重试仍未成功"
+					record.RetryAt = time.Time{}
+				})
+				return newSourceRetryExhaustedError(err, attempts)
+			}
 			return err
 		}
 		engine.changeSourceRecord(source, func(record *nativeSourceRecord) {
@@ -403,6 +441,20 @@ func (engine *nativeEngine) runContinuousSourceUpdate(ctx context.Context, sourc
 		}
 		engine.changeSourceRecord(source, func(record *nativeSourceRecord) { record.RetryAt = time.Time{} })
 	}
+}
+
+func sourceRunProgress(runTotal, remaining, previous int) int {
+	completed := runTotal - remaining
+	if completed < previous {
+		completed = previous
+	}
+	if completed < 0 {
+		completed = 0
+	}
+	if completed > runTotal {
+		completed = runTotal
+	}
+	return completed
 }
 
 func (engine *nativeEngine) sourceMetadataWork(source string) (ready, remaining int, nextRetry time.Time) {
@@ -439,12 +491,16 @@ func (engine *nativeEngine) retrySourceStep(ctx context.Context, source string, 
 		if err == nil {
 			return nil
 		}
-		var backoff *requestBackoff
-		if !errors.As(err, &backoff) {
-			attempts++
-		}
+		attempts++
 		retry, temporary := sourceRetryWait(err, attempts)
 		if !temporary {
+			if sourceRetryExhausted(err, attempts) {
+				engine.changeSourceRecord(source, func(record *nativeSourceRecord) {
+					record.Stage = "多次重试仍未成功"
+					record.RetryAt = time.Time{}
+				})
+				return newSourceRetryExhaustedError(err, attempts)
+			}
 			return err
 		}
 		engine.changeSourceRecord(source, func(record *nativeSourceRecord) {
@@ -463,17 +519,25 @@ func sourceRetryWait(err error, attempts int) (time.Time, bool) {
 	if !temporary {
 		return time.Time{}, false
 	}
+	if attempts >= nativeSourceRetryAttemptLimit {
+		return time.Time{}, false
+	}
 	var backoff *requestBackoff
 	if errors.As(err, &backoff) {
 		return retry, true
-	}
-	if isBoundedNetworkError(err) && attempts > nativeSourceNetworkAttemptLimit {
-		return time.Time{}, false
 	}
 	if attempts > 0 {
 		retry = time.Now().Add(time.Duration(min(120, 3*attempts*attempts)) * time.Second)
 	}
 	return retry, true
+}
+
+func sourceRetryExhausted(err error, attempts int) bool {
+	if attempts < nativeSourceRetryAttemptLimit {
+		return false
+	}
+	_, temporary := sourceRetryDelay(err)
+	return temporary
 }
 
 func isBoundedNetworkError(err error) bool {
@@ -598,7 +662,10 @@ func (engine *nativeEngine) updateSource(ctx context.Context, source, operation 
 	}
 	engine.mu.Unlock()
 	engine.changeSourceRecord(source, func(record *nativeSourceRecord) {
-		record.Stage, record.Completed, record.Total = "补齐剧集资料", 0, len(pending)
+		record.Stage = "补齐剧集资料"
+		if operation != "continuousMetadata" {
+			record.Completed, record.Total = 0, len(pending)
+		}
 	})
 	var failures []error
 	for index, drama := range pending {
@@ -633,7 +700,9 @@ func (engine *nativeEngine) updateSource(ctx context.Context, source, operation 
 			}
 		}
 		engine.changeSourceRecord(source, func(record *nativeSourceRecord) {
-			record.Completed = index + 1
+			if operation != "continuousMetadata" {
+				record.Completed = index + 1
+			}
 			record.MetadataCursor = drama.ID
 			if err == nil {
 				if record.MetadataChecked == nil {
