@@ -91,7 +91,7 @@ func (d *Downloader) resolveHuangdouPlayback(ctx context.Context, client *huangd
 	data := huangdouDataMap(decoded)
 	media := firstNonEmpty(mapString(data, "m3u8"), mapString(data, "url"), mapString(data, "play_url"), mapString(data, "playUrl"))
 	if huangdouPreviewOnly(data, media, client.host) {
-		return providerMedia{}, &huangdouAPIError{code: "preview", message: "黄豆仅提供试看，未取得该集正片；不会把试看内容当作完整分集"}
+		return providerMedia{}, &huangdouAPIError{code: "preview", message: "黄豆仅提供试看，未取得该集正片；不会把试看内容当作完整分集。可在站源管理的“验证与授权”里导入本人站点会话后重试"}
 	}
 	if media == "" {
 		media = fmt.Sprintf("%s/api/drama/hls/%s/%d/play.m3u8?line=free", client.host, url.PathEscape(sourceID), seq)
@@ -157,7 +157,7 @@ type huangdouAPIError struct {
 
 func (failure *huangdouAPIError) Error() string {
 	if failure.code != "preview" && isHuangdouAccessError(failure) {
-		return failure.message + "（站点权限限制，已停止自动重试；切换代理不会解锁）"
+		return failure.message + "（站点权限限制：请在站源管理的“验证与授权”里导入本人站点会话后重试）"
 	}
 	return failure.message
 }
@@ -203,7 +203,18 @@ func (c *huangdouAPIClient) callOnce(ctx context.Context, path string, data map[
 	if _, err := rand.Read(iv); err != nil {
 		return err
 	}
-	plain, err := json.Marshal(map[string]any{"token": "", "deviceId": c.deviceID, "data": data})
+	access, configured := c.d.sourceAccessFor(sourceHuangdou)
+	token := ""
+	deviceID := c.deviceID
+	cookie := ""
+	userAgent := ""
+	if configured {
+		token = access.Token
+		deviceID = firstNonEmpty(access.DeviceID, deviceID)
+		cookie = access.Cookie
+		userAgent = access.UserAgent
+	}
+	plain, err := json.Marshal(map[string]any{"token": token, "deviceId": deviceID, "data": data})
 	if err != nil {
 		return err
 	}
@@ -233,6 +244,12 @@ func (c *huangdouAPIClient) callOnce(ctx context.Context, path string, data map[
 	req.Header.Set("deviceType", huangdouDeviceType)
 	req.Header.Set("requestId", rid)
 	req.Header.Set("sessionId", c.sessionID)
+	if cookie != "" {
+		req.Header.Set("Cookie", cookie)
+	}
+	if userAgent != "" {
+		req.Header.Set("User-Agent", userAgent)
+	}
 	resp, err := c.d.doPreparedCatalogRequest(req, 20*time.Second, func(prepared *http.Request) {
 		timestamp := strconv.FormatInt(time.Now().Unix(), 10)
 		signRaw := "Dart|" + c.sessionID + "|" + rid + "|" + timestamp + "|" + path

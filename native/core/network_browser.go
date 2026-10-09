@@ -124,6 +124,10 @@ func huangguoBrowserHeaders(request *http.Request) fhttp.Header {
 	}
 	for key, values := range request.Header {
 		lower := strings.ToLower(key)
+		if lower == "user-agent" && len(values) > 0 {
+			headers["user-agent"] = append([]string(nil), values...)
+			continue
+		}
 		if _, fixed := headers[lower]; fixed || lower == "host" || lower == "connection" {
 			continue
 		}

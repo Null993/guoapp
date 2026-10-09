@@ -124,6 +124,18 @@ abstract class AppRepository {
   }) async => throw AppFailure('当前环境不支持站源管理');
   Future<SourceStatus> cancelSourceJob(String source) async =>
       throw AppFailure('当前环境不支持站源管理');
+  Future<Map<String, dynamic>> sourceAccess(String source) async =>
+      throw AppFailure('当前环境不支持站点会话');
+  Future<Map<String, dynamic>> saveSourceAccess(
+    String source, {
+    required String origin,
+    String cookie = '',
+    String userAgent = '',
+    String accessToken = '',
+    String deviceId = '',
+  }) async => throw AppFailure('当前环境不支持站点会话');
+  Future<void> clearSourceAccess(String source) async =>
+      throw AppFailure('当前环境不支持站点会话');
   Future<List<String>> suggestions(String query) async => const [];
   Future<Map<String, dynamic>> storage() async => {};
   Future<String> downloadDirectory() async =>
@@ -190,7 +202,35 @@ class NativeRepository extends AppRepository {
   static final _coverDecoder = CoverDecoder();
   NativeRepository({this.background = false});
   final bool background;
-  LocalStore? access;
+  LocalStore? _access;
+  int _accessEpoch = -1;
+  bool _accessWasLocked = false;
+  LocalStore? get access => _access;
+  set access(LocalStore? value) {
+    _access?.removeListener(_accessChanged);
+    _access = value;
+    _accessEpoch = value?.profileEpoch ?? -1;
+    _accessWasLocked = value?.locked ?? false;
+    value?.addListener(_accessChanged);
+  }
+
+  void _accessChanged() {
+    final current = _access;
+    if (current == null ||
+        current.profileEpoch == _accessEpoch &&
+            (current.locked == _accessWasLocked || !current.locked)) {
+      return;
+    }
+    _accessEpoch = current.profileEpoch;
+    _accessWasLocked = current.locked;
+    unawaited(_clearSessions());
+  }
+
+  Future<void> _clearSessions() async {
+    try {
+      await _call({'action': 'clearAllSourceAccess'});
+    } catch (_) {}
+  }
   final _readOwner = DateTime.now().microsecondsSinceEpoch.toString();
   int _readSequence = 0;
   final _activeReads = <String, int>{};
@@ -431,6 +471,33 @@ class NativeRepository extends AppRepository {
         await _call({'action': 'cancelSourceJob', 'source': source}),
       );
 
+  @override
+  Future<Map<String, dynamic>> sourceAccess(String source) =>
+      _call({'action': 'sourceAccess', 'source': source});
+
+  @override
+  Future<Map<String, dynamic>> saveSourceAccess(
+    String source, {
+    required String origin,
+    String cookie = '',
+    String userAgent = '',
+    String accessToken = '',
+    String deviceId = '',
+  }) => _call({
+    'action': 'saveSourceAccess',
+    'source': source,
+    'origin': origin,
+    'cookie': cookie,
+    'userAgent': userAgent,
+    'accessToken': accessToken,
+    'deviceId': deviceId,
+  });
+
+  @override
+  Future<void> clearSourceAccess(String source) async {
+    await _call({'action': 'clearSourceAccess', 'source': source});
+  }
+
   void _authorize(String source, {bool download = false}) {
     if (!SourceSite.isAvailable(source)) {
       throw AppFailure('当前版本不包含此站源');
@@ -508,6 +575,7 @@ class NativeRepository extends AppRepository {
             'cancelPlayback',
             'cancelRead',
             'updateSystemProxy',
+            'clearAllSourceAccess',
           }.contains(action) ||
           action == 'workLease' && input['command'] == 'end' ||
           action == 'lan' &&
@@ -532,11 +600,30 @@ class NativeRepository extends AppRepository {
         'catalog',
         'cached',
         'categories',
-        'sourceStatus',
         'sourceJob',
-        'cancelSourceJob',
       }.contains(action)) {
         _authorize(input['source'] as String);
+      }
+      if ({
+        'sourceStatus',
+        'cancelSourceJob',
+        'sourceAccess',
+        'saveSourceAccess',
+        'clearSourceAccess',
+      }.contains(action)) {
+        final source = input['source'] as String;
+        final visibleForManagement = access == null ||
+            access!.managedSources.any((site) => site.id == source) ||
+            action == 'cancelSourceJob' &&
+                access!.profile.allows(source) &&
+                (SourceSite.isPrimary(source) || access!.sourcesUnlocked);
+        if (!SourceSite.isAvailable(source) || !visibleForManagement) {
+          throw AppFailure('当前用户没有此站源管理权限');
+        }
+        if ({'saveSourceAccess', 'clearSourceAccess'}.contains(action) &&
+            access != null && !access!.profile.admin) {
+          throw AppFailure('仅管理员可以设置站点会话');
+        }
       }
       if ({
         'cover',

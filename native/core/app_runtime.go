@@ -71,6 +71,17 @@ type Downloader struct {
 	legacy                *legacyAPIClient
 	previewMu             sync.Mutex
 	previewSessions       map[string]*huangguoPreviewSession
+	sourceAccessMu        sync.RWMutex
+	sourceAccess          map[string]nativeSourceAccess
+}
+
+type nativeSourceAccess struct {
+	Source    string
+	Origin    string
+	Cookie    string
+	UserAgent string
+	Token     string
+	DeviceID  string
 }
 
 func defaultConfig() Config { return Config{MaxPagesPerSort: 50, PageSize: 30, Retries: 2} }
@@ -109,6 +120,11 @@ type nativeInput struct {
 	Action           string                  `json:"action"`
 	Directory        string                  `json:"directory"`
 	Source           string                  `json:"source"`
+	Origin           string                  `json:"origin"`
+	Cookie           string                  `json:"cookie"`
+	UserAgent        string                  `json:"userAgent"`
+	AccessToken      string                  `json:"accessToken"`
+	DeviceID         string                  `json:"deviceId"`
 	Page             int                     `json:"page"`
 	Query            string                  `json:"query"`
 	Category         string                  `json:"category"`
@@ -122,14 +138,15 @@ type nativeInput struct {
 }
 
 type nativeCatalogResult struct {
-	Items       []nativeDrama `json:"items"`
-	HasMore     bool          `json:"hasMore"`
-	Page        int           `json:"page"`
-	Warning     string        `json:"warning,omitempty"`
-	LocalSearch bool          `json:"localSearch"`
-	Fresh       bool          `json:"fresh"`
-	hongguo     *hongguoCatalogState
-	saveError   error
+	Items        []nativeDrama `json:"items"`
+	HasMore      bool          `json:"hasMore"`
+	Page         int           `json:"page"`
+	Warning      string        `json:"warning,omitempty"`
+	LocalSearch  bool          `json:"localSearch"`
+	Fresh        bool          `json:"fresh"`
+	hongguo      *hongguoCatalogState
+	saveError    error
+	catalogError error
 }
 
 type nativePlan struct {
@@ -273,6 +290,8 @@ func newNativeEngine(directory string) (*nativeEngine, error) {
 			}
 			if len(via) > 0 && !strings.EqualFold(request.URL.Host, via[0].URL.Host) {
 				request.Header.Del("X-Preview-Token")
+				request.Header.Del("Cookie")
+				request.Header.Del("Authorization")
 			}
 			return nil
 		}}
@@ -307,6 +326,9 @@ func NativeRequest(raw string) (result string) {
 		if errors.As(err, &backoff) {
 			envelope["code"] = "source_blocked"
 			envelope["retryAt"] = backoff.until
+			if backoff.verify {
+				envelope["code"] = "source_verification"
+			}
 		}
 		source := canonicalProviderSource(input.Source)
 		if source == "" {
@@ -450,6 +472,28 @@ func nativeDispatch(input nativeInput) (any, error) {
 		return map[string]any{"items": items}, err
 	case "sourceStatus":
 		return engine.sourceStatus(input.Source), nil
+	case "sourceAccess":
+		return engine.downloader.sourceAccessStatus(input.Source), nil
+	case "saveSourceAccess":
+		result, err := engine.downloader.saveSourceAccess(input)
+		if err == nil {
+			engine.changeSourceRecord(canonicalProviderSource(input.Source), func(record *nativeSourceRecord) {
+				record.RetryAt = time.Time{}
+				record.Error = ""
+			})
+		}
+		return result, err
+	case "clearSourceAccess":
+		engine.downloader.clearSourceAccess(input.Source)
+		return engine.downloader.sourceAccessStatus(input.Source), nil
+	case "clearAllSourceAccess":
+		engine.downloader.clearAllSourceAccess()
+		engine.mu.Lock()
+		for _, task := range engine.sourceTasks {
+			task.cancel()
+		}
+		engine.mu.Unlock()
+		return true, nil
 	case "sourceJob":
 		return engine.startSourceTask(input.Source, input.Command, input.Drama)
 	case "cancelSourceJob":
@@ -688,7 +732,7 @@ func (engine *nativeEngine) nativeCatalog(ctx context.Context, input nativeInput
 		return result, errors.New("站源暂未返回剧集，请稍后刷新")
 	}
 	if err != nil {
-		result.Warning = publicError(err).Error()
+		result.Warning, result.catalogError = publicError(err).Error(), err
 	}
 	seen := map[string]bool{}
 	for _, drama := range items {

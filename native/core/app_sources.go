@@ -5,11 +5,17 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
 	"time"
 )
+
+const nativeSourceCatalogPageLimit = 1000
+
+const nativeSourceNetworkAttemptLimit = 5
 
 type nativeSourceTask struct {
 	cancel context.CancelFunc
@@ -31,6 +37,7 @@ type nativeSourceRecord struct {
 	MetadataChecked map[string]time.Time `json:"metadataChecked,omitempty"`
 	MetadataRetryAt map[string]time.Time `json:"metadataRetryAt,omitempty"`
 	MetadataCursor  string               `json:"metadataCursor,omitempty"`
+	CatalogStarted  bool                 `json:"catalogStarted,omitempty"`
 }
 
 type nativeSourceStatus struct {
@@ -52,6 +59,7 @@ type nativeSourceStatus struct {
 	FinishedAt   time.Time           `json:"finishedAt"`
 	RetryAt      time.Time           `json:"retryAt"`
 	Health       *nativeSourceHealth `json:"health,omitempty"`
+	Resumable    bool                `json:"resumable"`
 }
 
 func (engine *nativeEngine) lockSourceCatalog(ctx context.Context, source string) (func(), error) {
@@ -149,7 +157,8 @@ func (engine *nativeEngine) sourceStatusLocked(source string) nativeSourceStatus
 		UpdatedAt: state.UpdatedAt, Operation: record.Operation, Running: record.Running, Stage: stage,
 		Completed: record.Completed, Total: record.Total, Added: record.Added, Error: record.Error,
 		StorageError: warning,
-		StartedAt:    record.StartedAt, FinishedAt: record.FinishedAt, RetryAt: record.RetryAt, Health: record.Health}
+		StartedAt:    record.StartedAt, FinishedAt: record.FinishedAt, RetryAt: record.RetryAt, Health: record.Health,
+		Resumable: record.CatalogStarted && !record.Running}
 }
 
 func (engine *nativeEngine) changeSourceRecord(source string, change func(*nativeSourceRecord)) {
@@ -170,7 +179,7 @@ func (engine *nativeEngine) startSourceTask(source, operation string, drama nati
 		return nativeSourceStatus{}, errNativeBuildSource
 	}
 	switch operation {
-	case "update", "more", "metadata", "vipMetadata", "check", "checkCatalog", "retrySave":
+	case "update", "resume", "more", "metadata", "vipMetadata", "check", "checkCatalog", "retrySave":
 	default:
 		return nativeSourceStatus{}, errors.New("无效的站源操作")
 	}
@@ -200,10 +209,13 @@ func (engine *nativeEngine) startSourceTask(source, operation string, drama nati
 		engine.mu.Unlock()
 		return nativeSourceStatus{}, fmt.Errorf("站源暂时暂停请求，请在 %d 秒后重试", max(1, int(time.Until(previous.RetryAt).Seconds()+.999)))
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
+	ctx, cancel := context.WithCancel(context.Background())
 	task := &nativeSourceTask{cancel: cancel}
 	engine.sourceTasks[source] = task
 	previous.Operation, previous.Running, previous.Stage = operation, true, "准备中"
+	if operation == "update" {
+		previous.CatalogStarted = false
+	}
 	previous.Completed, previous.Total, previous.Added = 0, 0, 0
 	previous.NeedsSave = false
 	previous.Error, previous.StartedAt, previous.FinishedAt, previous.RetryAt = "", time.Now(), time.Time{}, time.Time{}
@@ -234,6 +246,7 @@ func (engine *nativeEngine) runSourceTask(ctx context.Context, source, operation
 		if recover() != nil {
 			err = errors.New("站源任务处理失败，已保留缓存")
 		}
+		stopped := ctx.Err() != nil
 		task.cancel()
 		engine.mu.Lock()
 		defer engine.mu.Unlock()
@@ -242,24 +255,46 @@ func (engine *nativeEngine) runSourceTask(ctx context.Context, source, operation
 		record.Running, record.FinishedAt = false, time.Now()
 		record.Stage = "已完成"
 		if err != nil {
-			record.Stage, record.Error = "未完成", publicError(err).Error()
-			var persistence *nativePersistenceError
-			if errors.As(err, &persistence) {
-				record.NeedsSave, record.Error = engine.catalogSaveError != nil, ""
-				record.Stage = "已保存，可继续更新"
-				if record.NeedsSave {
-					record.Stage = "等待保存"
-				}
-			}
-			if errors.Is(err, context.Canceled) {
+			switch {
+			case stopped:
 				record.Stage, record.Error = "已停止", "已保留更新内容，可稍后继续"
-			}
-			if errors.Is(err, context.DeadlineExceeded) {
-				record.Error = "本次站源任务超时，已保留更新内容，可继续更新"
-			}
-			var backoff *requestBackoff
-			if errors.As(err, &backoff) {
-				record.RetryAt = backoff.until
+				record.RetryAt = time.Time{}
+			default:
+				record.Stage, record.Error = "未完成", publicError(err).Error()
+				var persistence *nativePersistenceError
+				if errors.As(err, &persistence) {
+					record.NeedsSave, record.Error = engine.catalogSaveError != nil, ""
+					record.Stage = "已保存，可继续更新"
+					if record.NeedsSave {
+						record.Stage = "等待保存"
+					}
+				}
+				if errors.Is(err, context.Canceled) {
+					record.Stage, record.Error = "已停止", "已保留更新内容，可稍后继续"
+					record.RetryAt = time.Time{}
+				}
+				var backoff *requestBackoff
+				if errors.As(err, &backoff) {
+					record.RetryAt = backoff.until
+					switch {
+					case backoff.verify:
+						record.Stage = "需要人工验证"
+						record.Error = "站点要求浏览器验证或人机校验，请在站源管理的“验证与授权”里导入本人站点会话后重试"
+						record.RetryAt = time.Time{}
+					case backoff.status == http.StatusForbidden:
+						record.Stage = "站点拒绝访问"
+						record.Error = "站点拒绝了当前请求，请在站源管理的“验证与授权”里导入本人站点会话后重试"
+					}
+				}
+				if errors.Is(err, context.DeadlineExceeded) {
+					record.Stage = "请求超时"
+					record.Error = "站源请求超时，已保留更新内容，可继续更新"
+				}
+				if isBoundedNetworkError(err) {
+					record.Stage = "网络不可用"
+					record.Error = "网络不可达，已保留更新内容，可稍后继续更新"
+					record.RetryAt = time.Time{}
+				}
 			}
 		}
 		engine.sourceRecords[source] = record
@@ -267,9 +302,238 @@ func (engine *nativeEngine) runSourceTask(ctx context.Context, source, operation
 	}()
 	if operation == "check" || operation == "checkCatalog" {
 		err = engine.checkSource(ctx, source, drama, operation == "check")
+	} else if operation == "update" || operation == "resume" {
+		ctx = context.WithValue(ctx, backgroundCatalogKey{}, true)
+		err = engine.runContinuousSourceUpdate(ctx, source, operation == "resume")
 	} else {
 		ctx = context.WithValue(ctx, backgroundCatalogKey{}, true)
 		err = engine.updateSource(ctx, source, operation)
+	}
+}
+
+func (engine *nativeEngine) runContinuousSourceUpdate(ctx context.Context, source string, resume bool) error {
+	engine.mu.Lock()
+	started := engine.sourceRecords[source].CatalogStarted
+	engine.mu.Unlock()
+	if !resume || !started {
+		engine.changeSourceRecord(source, func(record *nativeSourceRecord) { record.Stage = "查找新剧" })
+		if err := engine.retrySourceStep(ctx, source, func() error {
+			return engine.loadSourceCatalogPage(ctx, source, 1)
+		}); err != nil {
+			return err
+		}
+		engine.changeSourceRecord(source, func(record *nativeSourceRecord) { record.CatalogStarted = true })
+	}
+	note := ""
+	stalledPages := 0
+	pageLimit := max(nativeSourceCatalogPageLimit, engine.downloader.cfg.MaxPagesPerSort)
+	for {
+		current := engine.nativeCached(source)
+		if !current.HasMore {
+			break
+		}
+		page := current.Page + 1
+		if len(current.Items) == 0 {
+			page = 1
+		}
+		if page > pageLimit {
+			note = fmt.Sprintf("目录已加载 %d 页，达到本次更新上限", current.Page)
+			break
+		}
+		engine.changeSourceRecord(source, func(record *nativeSourceRecord) {
+			record.Stage = fmt.Sprintf("加载目录第 %d 页", page)
+			record.Completed, record.Total = current.Page, 0
+		})
+		if err := engine.retrySourceStep(ctx, source, func() error {
+			return engine.loadSourceCatalogPage(ctx, source, page)
+		}); err != nil {
+			return err
+		}
+		next := engine.nativeCached(source)
+		if next.HasMore && len(next.Items) <= len(current.Items) {
+			stalledPages++
+			if stalledPages >= 3 {
+				note = "源站目录连续多页没有新增内容，已保留当前目录位置"
+				break
+			}
+		} else {
+			stalledPages = 0
+		}
+	}
+	attempts := 0
+	for {
+		ready, remaining, nextRetry := engine.sourceMetadataWork(source)
+		if remaining == 0 {
+			engine.changeSourceRecord(source, func(record *nativeSourceRecord) {
+				record.CatalogStarted = false
+				record.Stage = firstNonEmpty(note, "目录已完成，资料检查已结束")
+			})
+			return nil
+		}
+		if ready == 0 {
+			engine.changeSourceRecord(source, func(record *nativeSourceRecord) {
+				record.Stage = "等待资料重试，随后自动续跑"
+				record.RetryAt = nextRetry
+			})
+			if err := waitSourceRetry(ctx, nextRetry); err != nil {
+				return err
+			}
+			engine.changeSourceRecord(source, func(record *nativeSourceRecord) { record.RetryAt = time.Time{} })
+			continue
+		}
+		err := engine.updateSource(ctx, source, "continuousMetadata")
+		if err == nil {
+			attempts = 0
+			continue
+		}
+		var backoff *requestBackoff
+		if !errors.As(err, &backoff) {
+			attempts++
+		}
+		retry, temporary := sourceRetryWait(err, attempts)
+		if !temporary {
+			return err
+		}
+		engine.changeSourceRecord(source, func(record *nativeSourceRecord) {
+			record.Stage = "资料请求未成功，等待后自动续跑"
+			record.RetryAt = retry
+		})
+		if waitErr := waitSourceRetry(ctx, retry); waitErr != nil {
+			return waitErr
+		}
+		engine.changeSourceRecord(source, func(record *nativeSourceRecord) { record.RetryAt = time.Time{} })
+	}
+}
+
+func (engine *nativeEngine) sourceMetadataWork(source string) (ready, remaining int, nextRetry time.Time) {
+	items := engine.nativeCached(source).Items
+	engine.mu.Lock()
+	record := engine.sourceRecords[source]
+	engine.mu.Unlock()
+	now := time.Now()
+	for _, drama := range items {
+		if drama.Episodes > 0 && drama.Description != "" && (source != sourceHuangdou || drama.VIP != nil) {
+			continue
+		}
+		if now.Sub(record.MetadataChecked[drama.ID]) < 24*time.Hour {
+			continue
+		}
+		remaining++
+		until := record.MetadataRetryAt[drama.ID]
+		if !now.Before(until) {
+			ready++
+		} else if nextRetry.IsZero() || until.Before(nextRetry) {
+			nextRetry = until
+		}
+	}
+	return ready, remaining, nextRetry
+}
+
+func (engine *nativeEngine) retrySourceStep(ctx context.Context, source string, step func() error) error {
+	attempts := 0
+	for {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		err := step()
+		if err == nil {
+			return nil
+		}
+		var backoff *requestBackoff
+		if !errors.As(err, &backoff) {
+			attempts++
+		}
+		retry, temporary := sourceRetryWait(err, attempts)
+		if !temporary {
+			return err
+		}
+		engine.changeSourceRecord(source, func(record *nativeSourceRecord) {
+			record.Stage = "请求未成功，等待后自动续跑"
+			record.RetryAt = retry
+		})
+		if err := waitSourceRetry(ctx, retry); err != nil {
+			return err
+		}
+		engine.changeSourceRecord(source, func(record *nativeSourceRecord) { record.RetryAt = time.Time{} })
+	}
+}
+
+func sourceRetryWait(err error, attempts int) (time.Time, bool) {
+	retry, temporary := sourceRetryDelay(err)
+	if !temporary {
+		return time.Time{}, false
+	}
+	var backoff *requestBackoff
+	if errors.As(err, &backoff) {
+		return retry, true
+	}
+	if isBoundedNetworkError(err) && attempts > nativeSourceNetworkAttemptLimit {
+		return time.Time{}, false
+	}
+	if attempts > 0 {
+		retry = time.Now().Add(time.Duration(min(120, 3*attempts*attempts)) * time.Second)
+	}
+	return retry, true
+}
+
+func isBoundedNetworkError(err error) bool {
+	if err == nil || errors.Is(err, context.DeadlineExceeded) {
+		return false
+	}
+	if errors.Is(err, net.ErrClosed) {
+		return true
+	}
+	var network net.Error
+	return errors.As(err, &network) && !network.Timeout()
+}
+
+func sourceTerminalError(err error) bool {
+	var verification *requestBackoff
+	if errors.As(err, &verification) && verification.verify {
+		return true
+	}
+	return isHuangdouAccessError(err) || isPermanentSourceError(err)
+}
+
+func sourceRetryDelay(err error) (time.Time, bool) {
+	if errors.Is(err, context.Canceled) || sourceTerminalError(err) {
+		return time.Time{}, false
+	}
+	var backoff *requestBackoff
+	if errors.As(err, &backoff) {
+		temporary := backoff.status == http.StatusTooManyRequests || backoff.status == http.StatusRequestTimeout || backoff.status >= 500
+		return backoff.until, temporary
+	}
+	var transient *sourceTransientError
+	if errors.As(err, &transient) {
+		delay := 3 * time.Second
+		if transient.status >= 500 {
+			delay = 5 * time.Second
+		}
+		return time.Now().Add(delay), true
+	}
+	if errors.Is(err, context.DeadlineExceeded) {
+		return time.Now().Add(3 * time.Second), true
+	}
+	var network net.Error
+	if errors.As(err, &network) {
+		return time.Now().Add(3 * time.Second), true
+	}
+	return time.Time{}, false
+}
+
+func waitSourceRetry(ctx context.Context, until time.Time) error {
+	delay := time.Until(until)
+	if delay < time.Second {
+		delay = time.Second
+	}
+	timer := time.NewTimer(delay)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+		return nil
 	}
 }
 
@@ -389,6 +653,10 @@ func (engine *nativeEngine) updateSource(ctx context.Context, source, operation 
 				}
 				retry := 5 * time.Minute
 				if strings.Contains(err.Error(), "404") {
+					if record.MetadataChecked == nil {
+						record.MetadataChecked = map[string]time.Time{}
+					}
+					record.MetadataChecked[drama.ID] = time.Now()
 					retry = 24 * time.Hour
 				}
 				record.MetadataRetryAt[drama.ID] = time.Now().Add(retry)
@@ -399,7 +667,9 @@ func (engine *nativeEngine) updateSource(ctx context.Context, source, operation 
 			if errors.As(err, &persistence) {
 				return err
 			}
-			failures = append(failures, err)
+			if !strings.Contains(err.Error(), "404") {
+				failures = append(failures, err)
+			}
 			var backoff *requestBackoff
 			if errors.As(err, &backoff) || len(failures) >= 2 {
 				break
@@ -417,6 +687,9 @@ func (engine *nativeEngine) loadSourceCatalogPage(ctx context.Context, source st
 	if result.Warning != "" {
 		if result.saveError != nil {
 			return result.saveError
+		}
+		if result.catalogError != nil {
+			return result.catalogError
 		}
 		return errors.New(result.Warning)
 	}
@@ -436,7 +709,7 @@ func (engine *nativeEngine) loadMoreSourceCatalogPages(ctx context.Context, sour
 		if len(current.Items) == 0 {
 			page = 1
 		}
-		if page > 1000000 {
+		if page > nativeSourceCatalogPageLimit {
 			return errors.New("站源分页已达到接口范围，已保留目录位置")
 		}
 		if err := engine.loadSourceCatalogPage(ctx, source, page); err != nil {

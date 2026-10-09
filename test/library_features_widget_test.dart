@@ -6,6 +6,7 @@ import 'package:duanju_app/follow_state.dart';
 import 'package:duanju_app/home_screen.dart';
 import 'package:duanju_app/local_store.dart';
 import 'package:duanju_app/models.dart';
+import 'package:duanju_app/playback_launch_screen.dart';
 import 'package:duanju_app/saved_library.dart';
 import 'package:duanju_app/widgets.dart';
 import 'package:flutter/material.dart';
@@ -335,7 +336,7 @@ void main() {
   );
 
   testWidgets(
-    'catalog card waits on home then opens player without launch page',
+    'catalog card opens the launch page immediately and ignores repeat taps',
     (tester) async {
       viewport(tester, const Size(390, 844));
       final store = await create();
@@ -348,11 +349,10 @@ void main() {
       );
       await tester.pumpAndSettle();
       await tester.tap(find.byKey(ValueKey(first.id)));
+      await tester.tap(find.byKey(ValueKey(first.id)));
       await tester.pump();
-      await tester.pump(const Duration(milliseconds: 350));
-      expect(find.text('正在进入播放'), findsNothing);
-      expect(find.text('立即播放'), findsNothing);
-      expect(find.text('合成一号'), findsOneWidget);
+      expect(find.byType(PlaybackLaunchScreen), findsOneWidget);
+      expect(find.text('正在进入播放'), findsOneWidget);
       expect(repository.detailRequests, [first.id]);
       repository.pendingDetail!.complete(
         LibraryFeatureRepository.makeDetail(first, 2),

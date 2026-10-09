@@ -62,6 +62,11 @@ var (
 	reDateText        = regexp.MustCompile(`\d{4}-\d{1,2}-\d{1,2}`)
 	reViewsText       = regexp.MustCompile(`(?i)[0-9]+(?:\.[0-9]+)?\s*[w万]?\s*次播放`)
 	reScoreText       = regexp.MustCompile(`[0-9]+(?:\.[0-9]+)?\s*分`)
+
+	reHuangguoHeading    = regexp.MustCompile(`(?is)<h[1-6]\b[^>]*>(.*?)</h[1-6]>`)
+	reHuangguoEpiBox     = regexp.MustCompile(`(?is)<(?:div|section|ul|ol)\b[^>]*(?:class|id)\s*=\s*["'][^"']*(?:episode|ep-list|ep_list|play-list|playlist|选集|剧集列表)[^"']*["'][^>]*>`)
+	huangguoSectionStop  = []string{"推荐", "猜你喜欢", "相关", "热门", "排行", "类似", "更多", "简介", "详情", "评论", "演员", "花絮", "下载"}
+	huangguoEpisodeWords = []string{"选集", "剧集", "播放列表", "全部集数"}
 )
 
 type providerEpisode struct {
@@ -265,7 +270,7 @@ func (d *Downloader) fetchHuangguoAIDetail(ctx context.Context, sourceID string)
 	}
 	drama := huangguoDetailMetadata(body, detailURL, sourceHuangguoAI, sourceID)
 	title := drama.DisplayTitle()
-	episodes := parseHuangguoAIEpisodes(body, detailURL, sourceID)
+	episodes := parseHuangguoAIEpisodes(body, detailURL, sourceID, huangguoDeclaredEpisodeCount(drama, body))
 	if len(episodes) == 0 {
 		if media := parseAIVideoURL(body, detailURL); media != "" {
 			episodes = []providerEpisode{{Key: "1", Title: title, URL: detailURL, Index: 1, HLS: media}}
@@ -322,7 +327,7 @@ func (d *Downloader) fetchHuangguoVideoDetail(ctx context.Context, sourceID stri
 			episodes = []providerEpisode{{Key: "1", Title: title, URL: detailURL, Index: 1, HLS: hls}}
 		}
 	} else {
-		episodes = parseHuangguoVideoEpisodes(body, detailURL)
+		episodes = parseHuangguoVideoEpisodesScoped(body, detailURL, sourceID, huangguoDeclaredEpisodeCount(drama, body))
 	}
 	if len(episodes) == 0 {
 		if hls := parseDataHLS(body, detailURL); hls != "" {
@@ -752,83 +757,301 @@ func parseHuangguoVideoCards(rawHTML, pageURL string) []Drama {
 	return out
 }
 
-func parseHuangguoAIEpisodes(rawHTML, pageURL, sourceID string) []providerEpisode {
+func parseHuangguoAIEpisodes(rawHTML, pageURL, sourceID string, maxEpisodes int) []providerEpisode {
 	matches := reAIEpisodeLink.FindAllStringSubmatchIndex(rawHTML, -1)
 	seen := map[string]bool{}
 	var episodes []providerEpisode
 	usedIndex := map[int]bool{}
+	pageKey := aiEpisodeKey(pageURL, sourceID)
 	for _, m := range matches {
 		if len(m) < 4 || m[2] < 0 || m[3] < 0 {
 			continue
 		}
 		href := rawHTML[m[2]:m[3]]
-		fullURL := resolveProviderURL(pageURL, href)
-		linkHTML := rawHTML[m[0]:m[1]]
-		title := firstNonEmpty(extractAttr(linkHTML, "title", "aria-label"), cleanText(linkHTML))
 		key := aiEpisodeKey(href, sourceID)
-		if key == "" {
-			key = fmt.Sprintf("auto-%d", len(episodes)+1)
-		}
-		if seen[key] || seen[fullURL] {
+		if key == "" || key == pageKey {
 			continue
 		}
-		seen[key] = true
-		seen[fullURL] = true
-		idx := episodeIndex(title, 0)
+		fullURL := resolveProviderURL(pageURL, href)
+		if fullURL == "" || fullURL == pageURL || seen[key] || seen[fullURL] {
+			continue
+		}
+		linkHTML := rawHTML[m[0]:m[1]]
+		title := firstNonEmpty(extractAttr(linkHTML, "title", "aria-label"), cleanText(linkHTML))
+		idx := huangguoEpisodeNumber(key, title)
+		if maxEpisodes > 0 && idx > maxEpisodes {
+			continue
+		}
 		if idx <= 0 {
 			idx = len(episodes) + 1
 		}
 		idx = nextUnusedEpisodeIndex(idx, usedIndex)
+		if maxEpisodes > 0 && idx > maxEpisodes {
+			continue
+		}
+		seen[key] = true
+		seen[fullURL] = true
 		usedIndex[idx] = true
 		episodes = append(episodes, providerEpisode{Key: key, Title: title, URL: fullURL, Index: idx})
 	}
 	sortProviderEpisodes(episodes)
+	if maxEpisodes > 0 && len(episodes) > maxEpisodes {
+		episodes = episodes[:maxEpisodes]
+	}
 	return episodes
 }
 
 func parseHuangguoVideoEpisodes(rawHTML, pageURL string) []providerEpisode {
-	blocks := reVideoCard.FindAllString(rawHTML, -1)
-	if len(blocks) == 0 {
-		blocks = reHuangguoLink.FindAllString(rawHTML, -1)
+	return parseHuangguoVideoEpisodesScoped(rawHTML, pageURL, "", 0)
+}
+
+func parseHuangguoVideoEpisodesScoped(rawHTML, pageURL, sourceID string, maxEpisodes int) []providerEpisode {
+	section := huangguoVideoEpisodeSection(rawHTML)
+	if section == "" {
+		return nil
 	}
+	seriesID := strings.TrimPrefix(strings.TrimPrefix(cleanID(sourceID), "series/"), "video/")
+	blocks := reVideoCard.FindAllString(section, -1)
+	if len(blocks) == 0 {
+		blocks = reHuangguoLink.FindAllString(section, -1)
+	}
+	type huangguoVideoCandidate struct {
+		episode providerEpisode
+		scoped  bool
+	}
+	pagePath := huangguoVideoPath(pageURL)
 	positions := map[string]int{}
-	var episodes []providerEpisode
-	numbered := false
+	var candidates []huangguoVideoCandidate
+	scopedCount := 0
 	for _, block := range blocks {
 		link := reHuangguoLink.FindStringSubmatch(block)
 		if len(link) < 2 {
 			continue
 		}
-		path, key := huangguoVideoSourceID(link[1])
-		if key == "" || !strings.HasPrefix(path, "video/") {
+		path := huangguoVideoPath(link[1])
+		if !strings.HasPrefix(path, "video/") || path == pagePath {
+			continue
+		}
+		key := cleanID(path)
+		if key == "" {
 			continue
 		}
 		fullURL := resolveProviderURL(pageURL, link[1])
-		title := firstNonEmpty(extractAttr(block, "title"), extractAttr(block, "alt"), cleanText(block))
-		index := episodeIndex(cleanText(block), episodeIndex(title, 0))
-		numbered = numbered || index > 0
-		episode := providerEpisode{Key: key, Title: title, URL: fullURL, Index: index, HLS: parseDataHLS(block, pageURL)}
-		if position, found := positions[fullURL]; found {
-			if episodes[position].Index <= 0 && index > 0 {
-				episodes[position] = episode
-			}
-		} else {
-			positions[fullURL] = len(episodes)
-			episodes = append(episodes, episode)
-		}
-	}
-	var result []providerEpisode
-	used := map[int]bool{}
-	for _, episode := range episodes {
-		if numbered && episode.Index <= 0 {
+		if fullURL == "" {
 			continue
 		}
-		episode.Index = nextUnusedEpisodeIndex(episode.Index, used)
-		used[episode.Index] = true
-		result = append(result, episode)
+		title := firstNonEmpty(extractAttr(block, "title"), extractAttr(block, "alt"), cleanText(block))
+		index := huangguoEpisodeNumber(key, cleanText(block), title)
+		if maxEpisodes > 0 && index > maxEpisodes {
+			continue
+		}
+		scoped := seriesID != "" && huangguoPathHasSourceID(link[1], seriesID)
+		if scoped {
+			scopedCount++
+		}
+		episode := providerEpisode{Key: key, Title: title, URL: fullURL, Index: index, HLS: parseDataHLS(block, pageURL)}
+		if position, found := positions[fullURL]; found {
+			if candidates[position].episode.Index <= 0 && index > 0 {
+				candidates[position] = huangguoVideoCandidate{episode: episode, scoped: scoped}
+			}
+			continue
+		}
+		positions[fullURL] = len(candidates)
+		candidates = append(candidates, huangguoVideoCandidate{episode: episode, scoped: scoped})
+	}
+	numbered := false
+	for _, candidate := range candidates {
+		if candidate.episode.Index > 0 {
+			numbered = true
+			break
+		}
+	}
+	strictScope := scopedCount > 0
+	var result []providerEpisode
+	used := map[int]bool{}
+	for _, candidate := range candidates {
+		if strictScope && !candidate.scoped {
+			continue
+		}
+		if numbered && candidate.episode.Index <= 0 {
+			continue
+		}
+		index := candidate.episode.Index
+		if index <= 0 {
+			index = len(result) + 1
+		}
+		index = nextUnusedEpisodeIndex(index, used)
+		if maxEpisodes > 0 && index > maxEpisodes {
+			continue
+		}
+		used[index] = true
+		candidate.episode.Index = index
+		result = append(result, candidate.episode)
 	}
 	sortProviderEpisodes(result)
+	if maxEpisodes > 0 && len(result) > maxEpisodes {
+		result = result[:maxEpisodes]
+	}
 	return result
+}
+
+func huangguoVideoEpisodeSection(rawHTML string) string {
+	if heading := huangguoEpisodeHeadingIndex(rawHTML); heading != nil {
+		section := rawHTML[heading[1]:]
+		if end := huangguoSectionEndIndex(section); end >= 0 {
+			section = section[:end]
+		}
+		return section
+	}
+	if block := huangguoVideoEpisodeListBlock(rawHTML); block != "" {
+		return block
+	}
+	if huangguoVideoPageWithoutRecommendations(rawHTML) {
+		return rawHTML
+	}
+	return ""
+}
+
+func huangguoVideoPageWithoutRecommendations(rawHTML string) bool {
+	return !strings.Contains(strings.ToLower(rawHTML), "video-card") &&
+		!strings.Contains(rawHTML, "相关推荐") &&
+		!strings.Contains(rawHTML, "猜你喜欢")
+}
+
+func huangguoEpisodeHeadingIndex(rawHTML string) []int {
+	for _, m := range huangguoHeadingMatches(rawHTML) {
+		text := cleanText(rawHTML[m[2]:m[3]])
+		if huangguoEpisodeHeadingText(text) {
+			return []int{m[0], m[1]}
+		}
+	}
+	return nil
+}
+
+func huangguoSectionEndIndex(section string) int {
+	for _, m := range huangguoHeadingMatches(section) {
+		text := cleanText(section[m[2]:m[3]])
+		if !huangguoEpisodeHeadingText(text) && huangguoUnrelatedHeadingText(text) {
+			return m[0]
+		}
+	}
+	return -1
+}
+
+func huangguoHeadingMatches(rawHTML string) [][]int {
+	var out [][]int
+	for _, m := range reHuangguoHeading.FindAllStringSubmatchIndex(rawHTML, -1) {
+		if len(m) >= 4 && m[2] >= 0 && m[3] >= 0 {
+			out = append(out, m)
+		}
+	}
+	return out
+}
+
+func huangguoEpisodeHeadingText(text string) bool {
+	if text == "" || huangguoUnrelatedHeadingText(text) {
+		return false
+	}
+	for _, word := range huangguoEpisodeWords {
+		if strings.Contains(text, word) {
+			return true
+		}
+	}
+	return false
+}
+
+func huangguoUnrelatedHeadingText(text string) bool {
+	for _, word := range huangguoSectionStop {
+		if strings.Contains(text, word) {
+			return true
+		}
+	}
+	return false
+}
+
+func huangguoVideoEpisodeListBlock(rawHTML string) string {
+	for _, m := range reHuangguoEpiBox.FindAllStringIndex(rawHTML, -1) {
+		opening := rawHTML[m[0]:m[1]]
+		lower := strings.ToLower(opening)
+		if huangguoUnrelatedHeadingText(opening) || strings.Contains(lower, "related") || strings.Contains(lower, "recommend") {
+			continue
+		}
+		tag := "div"
+		if tagMatch := huangguoHTMLTag.FindStringSubmatch(opening); len(tagMatch) > 2 {
+			tag = tagMatch[2]
+		}
+		return huangguoElementBlock(rawHTML, m[0], m[1], tag)
+	}
+	return ""
+}
+
+func huangguoDeclaredEpisodeCount(drama Drama, rawHTML string) int {
+	for _, value := range []any{drama.TotalEpisode, drama.TotalEpisodeSnake, drama.EpisodeCount, drama.EpisodeCountSnake, drama.ChapterCount, drama.ChapterCountSnake, drama.Total, drama.Episodes} {
+		if count, err := strconv.Atoi(nativeText(value)); err == nil && count > 0 {
+			return count
+		}
+	}
+	meta := huangguoClassBlock(huangguoNonContent.ReplaceAllString(rawHTML, ""), "hg-web-detail__meta")
+	if count := episodeIndex(firstNonEmpty(extractAttr(meta, "data-ep-base"), cleanText(meta)), 0); count > 0 {
+		return count
+	}
+	return 0
+}
+
+func huangguoEpisodeNumber(key string, texts ...string) int {
+	for _, text := range texts {
+		if n := episodeIndex(text, 0); n > 0 {
+			return n
+		}
+	}
+	return huangguoTrailingNumber(key)
+}
+
+func huangguoTrailingNumber(value string) int {
+	value = strings.TrimSpace(value)
+	end := len(value)
+	for end > 0 && value[end-1] >= '0' && value[end-1] <= '9' {
+		end--
+	}
+	if end == len(value) {
+		return 0
+	}
+	n, err := strconv.Atoi(value[end:])
+	if err != nil {
+		return 0
+	}
+	return n
+}
+
+func huangguoPathSegments(href string) []string {
+	u, err := url.Parse(html.UnescapeString(href))
+	if err != nil {
+		return nil
+	}
+	return strings.Split(strings.Trim(u.Path, "/"), "/")
+}
+
+func huangguoVideoPath(href string) string {
+	parts := huangguoPathSegments(href)
+	for i := 0; i+1 < len(parts); i++ {
+		if parts[i] == "series" || parts[i] == "video" {
+			return cleanID(strings.Join(parts[i:], "/"))
+		}
+	}
+	return ""
+}
+
+func huangguoPathHasSourceID(href, sourceID string) bool {
+	sourceID = cleanID(sourceID)
+	if sourceID == "" {
+		return false
+	}
+	for i, part := range huangguoPathSegments(href) {
+		if i > 0 && cleanID(part) == sourceID {
+			return true
+		}
+	}
+	return false
 }
 
 func parseAIVideoURL(rawHTML, pageURL string) string {
@@ -966,20 +1189,20 @@ func nextUnusedEpisodeIndex(preferred int, used map[int]bool) int {
 }
 
 func aiEpisodeKey(href, sourceID string) string {
-	u, err := url.Parse(html.UnescapeString(href))
-	path := href
-	if err == nil {
-		path = u.Path
-	}
-	path = strings.Trim(strings.TrimPrefix(path, "/video/"), "/")
-	parts := strings.Split(path, "/")
-	if len(parts) > 1 && parts[0] == sourceID {
-		return cleanID(parts[len(parts)-1])
-	}
-	if len(parts) == 1 && parts[0] == sourceID {
+	sourceID = cleanID(sourceID)
+	if sourceID == "" {
 		return ""
 	}
-	return cleanID(strings.Join(parts, "-"))
+	parts := huangguoPathSegments(href)
+	for i := 0; i+2 < len(parts); i++ {
+		if parts[i] != "video" || cleanID(parts[i+1]) != sourceID {
+			continue
+		}
+		if key := cleanID(strings.Join(parts[i+2:], "-")); key != "" {
+			return key
+		}
+	}
+	return ""
 }
 
 func huangguoVideoSourceID(href string) (path, sourceID string) {

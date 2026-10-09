@@ -37,6 +37,9 @@ class LocalSnapshot {
     'sourceGateSalt',
     'sourceGateHash',
     'forceLogin',
+    'removedSources',
+    'disabledSources',
+    'sourceNames',
   };
   final SharedPreferences preferences;
   Map<String, Object> _values = {};

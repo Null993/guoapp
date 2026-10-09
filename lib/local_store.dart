@@ -47,6 +47,9 @@ class LocalStore extends ChangeNotifier {
   bool _sourcesUnlocked = false;
   bool _gateEnabled = false;
   bool _gateOff = false;
+  Set<String> _removedSources = {};
+  Set<String> _disabledSources = {};
+  Map<String, String> _sourceNames = {};
   String _gateSalt = '';
   String _gateHash = '';
   DateTime _retryAfter = DateTime(2000);
@@ -72,6 +75,7 @@ class LocalStore extends ChangeNotifier {
       _configurationError = null;
       _locked = forceLogin && profile.protected;
       _loadSourceGate();
+      _loadSourceConfiguration();
       _loadLibrary();
     } catch (_) {
       _block('本地用户配置损坏，已锁定访问。原始记录已保留，请重新读取或从备份恢复。');
@@ -135,11 +139,111 @@ class LocalStore extends ChangeNotifier {
   bool allowsSource(String source) =>
       !locked &&
       SourceSite.isAvailable(source) &&
+      !_removedSources.contains(source) &&
+      !_disabledSources.contains(source) &&
       profile.allows(source) &&
       (_gateOff || _sourcesUnlocked || SourceSite.isPrimary(source));
-  List<SourceSite> get sources => SourceSite.visibleValues(
-    unlocked: _gateOff || _sourcesUnlocked,
-  ).where((site) => allowsSource(site.id)).toList();
+  Iterable<SourceSite> get _visibleSites =>
+      SourceSite.visibleValues(unlocked: sourcesUnlocked);
+
+  List<SourceSite> get sources => [
+    for (final site in _visibleSites)
+      if (allowsSource(site.id)) _configuredSource(site),
+  ];
+
+  List<SourceSite> get managedSources => [
+    for (final site in _visibleSites)
+      if (_managedSite(site)) _configuredSource(site),
+  ];
+
+  List<SourceSite> get removedSources => [
+    for (final site in _visibleSites)
+      if (_removedSite(site)) _configuredSource(site),
+  ];
+
+  bool _managedSite(SourceSite site) =>
+      !locked &&
+      profile.allows(site.id) &&
+      !_removedSources.contains(site.id);
+
+  bool _removedSite(SourceSite site) =>
+      !locked && profile.allows(site.id) && _removedSources.contains(site.id);
+
+  bool sourceEnabled(String source) => !_disabledSources.contains(source);
+  SourceSite _configuredSource(SourceSite site) => SourceSite(
+    site.id,
+    _sourceNames[site.id] ?? site.name,
+    site.description,
+  );
+
+  void _loadSourceConfiguration() {
+    List<String> readList(String key) {
+      try {
+        return (jsonDecode(_string(key) ?? '[]') as List)
+            .whereType<String>()
+            .where(SourceSite.isAvailable)
+            .toList();
+      } catch (_) {
+        return [];
+      }
+    }
+    _removedSources = readList('removedSources').toSet();
+    _disabledSources = readList('disabledSources').toSet();
+    try {
+      final names = Map<String, dynamic>.from(
+        jsonDecode(_string('sourceNames') ?? '{}') as Map,
+      );
+      _sourceNames = {};
+      for (final entry in names.entries) {
+        final name = entry.value;
+        if (name is! String) continue;
+        final clean = name.trim();
+        if (!SourceSite.isAvailable(entry.key) ||
+            clean.isEmpty ||
+            clean.runes.length > 30) {
+          continue;
+        }
+        _sourceNames[entry.key] = clean;
+      }
+    } catch (_) {
+      _sourceNames = {};
+    }
+  }
+
+  Future<void> configureSource(
+    String source, {
+    bool? removed,
+    bool? enabled,
+    String? name,
+  }) => _queue(() async {
+    _requireAdmin();
+    if (!SourceSite.isAvailable(source)) throw StateError('当前版本没有此站源解析器');
+    final nextRemoved = {..._removedSources};
+    final nextDisabled = {..._disabledSources};
+    final nextNames = {..._sourceNames};
+    if (removed == true) nextRemoved.add(source);
+    if (removed == false) nextRemoved.remove(source);
+    if (enabled == false) nextDisabled.add(source);
+    if (enabled == true) nextDisabled.remove(source);
+    if (name != null) {
+      final clean = name.trim();
+      if (clean.runes.length > 30) throw StateError('站源名称不能超过 30 字');
+      if (clean.isEmpty || clean == SourceSite.byId(source).name) {
+        nextNames.remove(source);
+      } else {
+        nextNames[source] = clean;
+      }
+    }
+    await _commit({
+      'removedSources': jsonEncode(nextRemoved.toList()),
+      'disabledSources': jsonEncode(nextDisabled.toList()),
+      'sourceNames': jsonEncode(nextNames),
+    });
+    _removedSources = nextRemoved;
+    _disabledSources = nextDisabled;
+    _sourceNames = nextNames;
+    _notify();
+  });
 
   /// 默认隐藏的站源是否已解锁。解锁状态只在本次运行内有效，重启后恢复隐藏。
   bool get sourcesUnlocked => _gateOff || _sourcesUnlocked;
@@ -978,6 +1082,53 @@ class LocalStore extends ChangeNotifier {
     _notify();
   });
 
+  List<String> _backupSourceIds(Object? value, String label) {
+    if (value == null) return const [];
+    if (value is! List || value.length > SourceSite.allValues.length) {
+      throw FormatException('备份$label无效');
+    }
+    final ids = value.whereType<String>().toList();
+    if (ids.length != value.length ||
+        ids.toSet().length != ids.length ||
+        ids.any((id) => !SourceSite.isKnown(id))) {
+      throw FormatException('备份$label无效');
+    }
+    return ids;
+  }
+
+  List<String> _availableSourceIds(Object? value, String label) => [
+    for (final id in _backupSourceIds(value, label))
+      if (SourceSite.isAvailable(id)) id,
+  ];
+
+  Map<String, String> _backupSourceNames(Object? value) {
+    if (value == null) return const {};
+    if (value is! Map || value.length > SourceSite.allValues.length) {
+      throw const FormatException('备份站源名称无效');
+    }
+    final names = <String, String>{};
+    for (final entry in value.entries) {
+      final id = entry.key;
+      final name = entry.value;
+      if (id is! String || name is! String) {
+        throw const FormatException('备份站源名称无效');
+      }
+      final clean = name.trim();
+      if (!SourceSite.isKnown(id) ||
+          clean.isEmpty ||
+          clean.runes.length > 30) {
+        throw const FormatException('备份站源名称无效');
+      }
+      names[id] = clean;
+    }
+    return names;
+  }
+
+  Map<String, String> _availableSourceNames(Object? value) => {
+    for (final entry in _backupSourceNames(value).entries)
+      if (SourceSite.isAvailable(entry.key)) entry.key: entry.value,
+  };
+
   Future<String> exportBackup() async {
     await _writes.catchError((Object _) {});
     _requireAdmin();
@@ -990,6 +1141,9 @@ class LocalStore extends ChangeNotifier {
       'autoExport': autoExport,
       'exportPosters': exportPosters,
       'forceLogin': forceLogin,
+      'removedSources': _removedSources.toList(),
+      'disabledSources': _disabledSources.toList(),
+      'sourceNames': _sourceNames,
       'libraries': {
         for (final profile in _profiles)
           profile.id: {
@@ -1099,6 +1253,9 @@ class LocalStore extends ChangeNotifier {
         throw const FormatException('备份搜索记录无效');
       }
     }
+    _backupSourceIds(data['removedSources'], '移除记录');
+    _backupSourceIds(data['disabledSources'], '停用记录');
+    _backupSourceNames(data['sourceNames']);
     return data;
   }
 
@@ -1119,6 +1276,13 @@ class LocalStore extends ChangeNotifier {
       'forceLogin': data['forceLogin'] is bool
           ? data['forceLogin'] as bool
           : profiles.firstWhere((profile) => profile.admin).protected,
+      'removedSources': jsonEncode(
+        _availableSourceIds(data['removedSources'], '移除记录'),
+      ),
+      'disabledSources': jsonEncode(
+        _availableSourceIds(data['disabledSources'], '停用记录'),
+      ),
+      'sourceNames': jsonEncode(_availableSourceNames(data['sourceNames'])),
     };
     final libraries = data['libraries'] as Map;
     for (final profile in profiles) {
@@ -1160,6 +1324,7 @@ class LocalStore extends ChangeNotifier {
     _configurationError = null;
     _locked = forceLogin && profile.protected;
     _loadSourceGate();
+    _loadSourceConfiguration();
     _loadLibrary();
     _epoch++;
     _notify();
