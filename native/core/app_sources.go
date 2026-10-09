@@ -2,6 +2,8 @@ package core
 
 import (
 	"context"
+	"crypto/tls"
+	"crypto/x509"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -15,7 +17,17 @@ import (
 
 const nativeSourceCatalogPageLimit = 1000
 
+const nativeMetadataFlushInterval = 2 * time.Second
+
+var (
+	nativeMetadataWorkers          = 4
+	nativeMetadataFlushItems       = 20
+	nativeMetadataDeferDetailWrite = true
+)
+
 var nativeSourceRetryAttemptLimit = 8
+
+type nativeDeferredDetailKey struct{}
 
 type nativeSourceRetryExhaustedError struct {
 	cause    error
@@ -56,6 +68,12 @@ type nativeSourceRecord struct {
 	MetadataRetryAt map[string]time.Time `json:"metadataRetryAt,omitempty"`
 	MetadataCursor  string               `json:"metadataCursor,omitempty"`
 	CatalogStarted  bool                 `json:"catalogStarted,omitempty"`
+
+	pendingProgressFlush int
+	catalogDirty         bool
+	recordDirty          bool
+	progressFlushedAt    time.Time
+	catalogFlushCount    int
 }
 
 type nativeSourceStatus struct {
@@ -191,6 +209,67 @@ func (engine *nativeEngine) changeSourceRecord(source string, change func(*nativ
 	engine.saveSourceRecordsLocked()
 }
 
+func (engine *nativeEngine) changeSourceRecordDeferred(source string, change func(*nativeSourceRecord)) {
+	engine.mu.Lock()
+	defer engine.mu.Unlock()
+	if engine.sourceRecords == nil {
+		engine.sourceRecords = map[string]nativeSourceRecord{}
+	}
+	record := engine.sourceRecords[source]
+	change(&record)
+	engine.sourceRecords[source] = record
+	engine.markSourceRecordDirtyLocked(source)
+	engine.flushSourceProgressLocked(source, false)
+}
+
+func (engine *nativeEngine) markSourceCatalogDirtyLocked(source string) {
+	record := engine.sourceRecords[source]
+	record.catalogDirty = true
+	engine.sourceRecords[source] = record
+}
+
+func (engine *nativeEngine) markSourceRecordDirtyLocked(source string) {
+	record := engine.sourceRecords[source]
+	record.recordDirty = true
+	record.pendingProgressFlush++
+	engine.sourceRecords[source] = record
+}
+
+func (engine *nativeEngine) flushSourceProgress(source string, force bool) error {
+	engine.mu.Lock()
+	defer engine.mu.Unlock()
+	return engine.flushSourceProgressLocked(source, force)
+}
+
+func (engine *nativeEngine) flushSourceProgressLocked(source string, force bool) error {
+	record := engine.sourceRecords[source]
+	if !record.catalogDirty && !record.recordDirty {
+		return nil
+	}
+	if !force && record.pendingProgressFlush < nativeMetadataFlushItems && time.Since(record.progressFlushedAt) < nativeMetadataFlushInterval {
+		return nil
+	}
+	var failures []error
+	if record.catalogDirty {
+		if err := engine.writeCatalogDiskLocked(); err != nil {
+			failures = append(failures, err)
+		} else {
+			record.catalogDirty = false
+			record.catalogFlushCount++
+		}
+	}
+	if record.recordDirty {
+		if err := engine.saveSourceRecordsLocked(); err != nil {
+			failures = append(failures, err)
+		} else {
+			record.recordDirty = false
+		}
+	}
+	record.pendingProgressFlush, record.progressFlushedAt = 0, time.Now()
+	engine.sourceRecords[source] = record
+	return errors.Join(failures...)
+}
+
 func (engine *nativeEngine) startSourceTask(source, operation string, drama nativeDrama) (nativeSourceStatus, error) {
 	source = canonicalProviderSource(source)
 	if !nativeSourceAvailable(source) {
@@ -239,6 +318,9 @@ func (engine *nativeEngine) startSourceTask(source, operation string, drama nati
 	previous.Error, previous.StartedAt, previous.FinishedAt, previous.RetryAt = "", time.Now(), time.Time{}, time.Time{}
 	engine.sourceRecords[source] = previous
 	engine.saveSourceRecordsLocked()
+	if operation == "update" {
+		engine.markSourceCatalogProbeLocked(source)
+	}
 	status := engine.sourceStatusLocked(source)
 	engine.mu.Unlock()
 	go engine.runSourceTask(ctx, source, operation, drama, task)
@@ -269,6 +351,10 @@ func (engine *nativeEngine) runSourceTask(ctx context.Context, source, operation
 		engine.mu.Lock()
 		defer engine.mu.Unlock()
 		delete(engine.sourceTasks, source)
+		flushErr := engine.flushSourceProgressLocked(source, true)
+		if err == nil {
+			err = flushErr
+		}
 		record := engine.sourceRecords[source]
 		record.Running, record.FinishedAt = false, time.Now()
 		record.Stage = "已完成"
@@ -290,6 +376,7 @@ func (engine *nativeEngine) runSourceTask(ctx context.Context, source, operation
 					if record.NeedsSave {
 						record.Stage = "等待保存"
 					}
+					break
 				}
 				if errors.Is(err, context.Canceled) {
 					record.Stage, record.Error = "已停止", "已保留更新内容，可稍后继续"
@@ -315,6 +402,11 @@ func (engine *nativeEngine) runSourceTask(ctx context.Context, source, operation
 				if isBoundedNetworkError(err) {
 					record.Stage = "网络请求失败"
 					record.Error = fmt.Sprintf("网络请求失败（%s），已保留更新内容，可稍后继续更新", publicError(err).Error())
+					record.RetryAt = time.Time{}
+				}
+				if isCertificateSourceError(err) {
+					record.Stage = "站点证书不受信任"
+					record.Error = "站点 TLS 证书不被信任，常见于本机代理（Clash / v2ray 等）替换了证书。请在“网络与资源”里改用直连或换用不做证书替换的代理；也可以打开“允许本机代理替换证书（关闭 TLS 校验）”，该选项有安全风险，仅限你自己的代理。"
 					record.RetryAt = time.Time{}
 				}
 			}
@@ -369,6 +461,12 @@ func (engine *nativeEngine) runContinuousSourceUpdate(ctx context.Context, sourc
 		if err := engine.retrySourceStep(ctx, source, func() error {
 			return engine.loadSourceCatalogPage(ctx, source, page)
 		}); err != nil {
+			if page > 1 && sourceCatalogPageMissing(err) {
+				engine.markSourceCatalogComplete(source)
+				note = fmt.Sprintf("目录已加载完，共 %d 页（末页返回 404）", current.Page)
+				engine.changeSourceRecord(source, func(record *nativeSourceRecord) { record.Stage = note })
+				break
+			}
 			return err
 		}
 		next := engine.nativeCached(source)
@@ -551,6 +649,23 @@ func isBoundedNetworkError(err error) bool {
 	return errors.As(err, &network) && !network.Timeout()
 }
 
+func isCertificateSourceError(err error) bool {
+	if err == nil {
+		return false
+	}
+	var verification *tls.CertificateVerificationError
+	var unknownAuthority x509.UnknownAuthorityError
+	var hostname x509.HostnameError
+	var invalid x509.CertificateInvalidError
+	if errors.As(err, &verification) || errors.As(err, &unknownAuthority) || errors.As(err, &hostname) || errors.As(err, &invalid) {
+		return true
+	}
+	text := strings.ToLower(err.Error())
+	return strings.Contains(text, "failed to verify certificate") ||
+		strings.Contains(text, "certificate signed by unknown authority") ||
+		strings.Contains(text, "x509: certificate")
+}
+
 func sourceTerminalError(err error) bool {
 	var verification *requestBackoff
 	if errors.As(err, &verification) && verification.verify {
@@ -606,8 +721,11 @@ func (engine *nativeEngine) updateSource(ctx context.Context, source, operation 
 	count := len(before.Items)
 	defer func() {
 		after := len(engine.nativeCached(source).Items)
-		engine.changeSourceRecord(source, func(record *nativeSourceRecord) { record.Added = max(0, after-count) })
+		engine.changeSourceRecordDeferred(source, func(record *nativeSourceRecord) { record.Added = max(0, after-count) })
 	}()
+	if operation == "continuousMetadata" && nativeMetadataDeferDetailWrite {
+		ctx = context.WithValue(ctx, nativeDeferredDetailKey{}, true)
+	}
 	if operation == "update" {
 		engine.changeSourceRecord(source, func(record *nativeSourceRecord) { record.Stage = "查找新剧" })
 		if err := engine.loadSourceCatalogPage(ctx, source, 1); err != nil {
@@ -668,81 +786,119 @@ func (engine *nativeEngine) updateSource(ctx context.Context, source, operation 
 		}
 	})
 	var failures []error
-	for index, drama := range pending {
+	type sourceMetadataFetch struct {
+		fresh      nativeDrama
+		unknownVIP bool
+		err        error
+	}
+	fetched := make([]sourceMetadataFetch, len(pending))
+	stopped := false
+	for waveStart := 0; waveStart < len(pending) && !stopped; waveStart += nativeMetadataWorkers {
 		if ctx.Err() != nil {
-			return ctx.Err()
+			break
 		}
-		result, err := engine.nativeDetail(ctx, drama)
-		unknownVIP := false
-		if err == nil {
-			fresh := result.(map[string]any)["drama"].(nativeDrama)
-			var metadataErr error
-			if nativeNeedsExtraMetadata(fresh) {
-				fresh, metadataErr = engine.nativeExtraMetadata(ctx, fresh)
-			}
-			unknownVIP = source == sourceHuangdou && fresh.VIP == nil
-			engine.mu.Lock()
-			engine.catalogs[source] = mergeNativeCatalog(engine.catalogs[source], []nativeDrama{fresh})
-			for key, items := range engine.catalogs {
-				if !strings.HasPrefix(key, source+"|") {
-					continue
+		waveEnd := min(waveStart+nativeMetadataWorkers, len(pending))
+		done := make(chan struct{}, waveEnd-waveStart)
+		for index := waveStart; index < waveEnd; index++ {
+			go func(index int) {
+				defer func() { done <- struct{}{} }()
+				item := sourceMetadataFetch{}
+				result, err := engine.nativeDetail(ctx, pending[index])
+				if err == nil {
+					fresh := result.(map[string]any)["drama"].(nativeDrama)
+					if nativeNeedsExtraMetadata(fresh) {
+						fresh, err = engine.nativeExtraMetadata(ctx, fresh)
+					}
+					item.fresh = fresh
+					item.unknownVIP = source == sourceHuangdou && fresh.VIP == nil
 				}
-				for index := range items {
-					if items[index].ID == fresh.ID {
-						items[index] = mergeNativeDrama(items[index], fresh)
+				item.err = err
+				fetched[index] = item
+			}(index)
+		}
+		for index := waveStart; index < waveEnd; index++ {
+			<-done
+		}
+		for index := waveStart; index < waveEnd; index++ {
+			drama := pending[index]
+			item := fetched[index]
+			err := item.err
+			if err == nil {
+				fresh := item.fresh
+				engine.mu.Lock()
+				engine.catalogs[source] = mergeNativeCatalog(engine.catalogs[source], []nativeDrama{fresh})
+				for key, items := range engine.catalogs {
+					if !strings.HasPrefix(key, source+"|") {
+						continue
+					}
+					for position := range items {
+						if items[position].ID == fresh.ID {
+							items[position] = mergeNativeDrama(items[position], fresh)
+						}
 					}
 				}
-			}
-			err = engine.writeCatalogDiskLocked()
-			engine.mu.Unlock()
-			if err == nil {
-				err = metadataErr
-			}
-		}
-		engine.changeSourceRecord(source, func(record *nativeSourceRecord) {
-			if operation != "continuousMetadata" {
-				record.Completed = index + 1
-			}
-			record.MetadataCursor = drama.ID
-			if err == nil {
-				if record.MetadataChecked == nil {
-					record.MetadataChecked = map[string]time.Time{}
+				engine.markSourceCatalogDirtyLocked(source)
+				flushErr := engine.flushSourceProgressLocked(source, false)
+				engine.mu.Unlock()
+				if flushErr != nil {
+					return flushErr
 				}
-				record.MetadataChecked[drama.ID] = time.Now()
-				delete(record.MetadataRetryAt, drama.ID)
-				if unknownVIP {
-					if record.MetadataRetryAt == nil {
-						record.MetadataRetryAt = map[string]time.Time{}
-					}
-					record.MetadataRetryAt[drama.ID] = time.Now().Add(5 * time.Minute)
+			}
+			engine.changeSourceRecordDeferred(source, func(record *nativeSourceRecord) {
+				if operation != "continuousMetadata" {
+					record.Completed = index + 1
 				}
-			} else if ctx.Err() == nil {
-				if record.MetadataRetryAt == nil {
-					record.MetadataRetryAt = map[string]time.Time{}
-				}
-				retry := 5 * time.Minute
-				if strings.Contains(err.Error(), "404") {
+				record.MetadataCursor = drama.ID
+				if err == nil {
 					if record.MetadataChecked == nil {
 						record.MetadataChecked = map[string]time.Time{}
 					}
 					record.MetadataChecked[drama.ID] = time.Now()
-					retry = 24 * time.Hour
+					delete(record.MetadataRetryAt, drama.ID)
+					if item.unknownVIP {
+						if record.MetadataRetryAt == nil {
+							record.MetadataRetryAt = map[string]time.Time{}
+						}
+						record.MetadataRetryAt[drama.ID] = time.Now().Add(5 * time.Minute)
+					}
+				} else if ctx.Err() == nil {
+					if record.MetadataRetryAt == nil {
+						record.MetadataRetryAt = map[string]time.Time{}
+					}
+					retry := 5 * time.Minute
+					if sourceMetadataMissing(err) {
+						if record.MetadataChecked == nil {
+							record.MetadataChecked = map[string]time.Time{}
+						}
+						record.MetadataChecked[drama.ID] = time.Now()
+						retry = 24 * time.Hour
+					}
+					record.MetadataRetryAt[drama.ID] = time.Now().Add(retry)
 				}
-				record.MetadataRetryAt[drama.ID] = time.Now().Add(retry)
+			})
+			if err != nil {
+				var persistence *nativePersistenceError
+				if errors.As(err, &persistence) {
+					return err
+				}
+				if !sourceMetadataMissing(err) {
+					failures = append(failures, err)
+				}
+				var backoff *requestBackoff
+				var intercepted *proxyInterceptionError
+				if errors.As(err, &backoff) || errors.As(err, &intercepted) || len(failures) >= 2 {
+					stopped = true
+					break
+				}
 			}
-		})
-		if err != nil {
-			var persistence *nativePersistenceError
-			if errors.As(err, &persistence) {
-				return err
-			}
-			if !strings.Contains(err.Error(), "404") {
-				failures = append(failures, err)
-			}
-			var backoff *requestBackoff
-			if errors.As(err, &backoff) || len(failures) >= 2 {
-				break
-			}
+		}
+	}
+	if ctx.Err() != nil {
+		return ctx.Err()
+	}
+	if operation != "continuousMetadata" {
+		if err := engine.flushSourceProgress(source, true); err != nil {
+			return err
 		}
 	}
 	return errors.Join(failures...)
@@ -786,4 +942,61 @@ func (engine *nativeEngine) loadMoreSourceCatalogPages(ctx context.Context, sour
 		}
 	}
 	return nil
+}
+
+func sourceMetadataMissing(err error) bool {
+	if err == nil {
+		return false
+	}
+	var intercepted *proxyInterceptionError
+	if errors.As(err, &intercepted) {
+		return false
+	}
+	return strings.Contains(err.Error(), "HTTP 404")
+}
+
+func sourceCatalogPageMissing(err error) bool {
+	if err == nil {
+		return false
+	}
+	if _, backoff := err.(*requestBackoff); backoff {
+		return false
+	}
+	if transient, ok := err.(*sourceTransientError); ok {
+		return transient.status == http.StatusNotFound || transient.status == http.StatusGone
+	}
+	if joined, ok := err.(interface{ Unwrap() []error }); ok {
+		for _, child := range joined.Unwrap() {
+			if sourceCatalogPageMissing(child) {
+				return true
+			}
+		}
+		return false
+	}
+	if wrapped, ok := err.(interface{ Unwrap() error }); ok {
+		return sourceCatalogPageMissing(wrapped.Unwrap())
+	}
+	message := err.Error()
+	return strings.Contains(message, "HTTP 404") || strings.Contains(message, "HTTP 410")
+}
+
+func (engine *nativeEngine) markSourceCatalogComplete(source string) {
+	engine.mu.Lock()
+	defer engine.mu.Unlock()
+	engine.markSourceCatalogHasMoreLocked(source, false)
+}
+
+func (engine *nativeEngine) markSourceCatalogProbeLocked(source string) {
+	engine.markSourceCatalogHasMoreLocked(source, true)
+}
+
+func (engine *nativeEngine) markSourceCatalogHasMoreLocked(source string, hasMore bool) {
+	key := nativeCatalogKey(canonicalProviderSource(source), "")
+	if engine.catalogStates == nil {
+		engine.catalogStates = map[string]nativeCatalogState{}
+	}
+	state := engine.catalogStates[key]
+	state.HasMore = hasMore
+	engine.catalogStates[key] = state
+	engine.markSourceCatalogDirtyLocked(source)
 }

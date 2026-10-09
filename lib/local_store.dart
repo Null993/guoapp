@@ -162,19 +162,14 @@ class LocalStore extends ChangeNotifier {
   ];
 
   bool _managedSite(SourceSite site) =>
-      !locked &&
-      profile.allows(site.id) &&
-      !_removedSources.contains(site.id);
+      !locked && profile.allows(site.id) && !_removedSources.contains(site.id);
 
   bool _removedSite(SourceSite site) =>
       !locked && profile.allows(site.id) && _removedSources.contains(site.id);
 
   bool sourceEnabled(String source) => !_disabledSources.contains(source);
-  SourceSite _configuredSource(SourceSite site) => SourceSite(
-    site.id,
-    _sourceNames[site.id] ?? site.name,
-    site.description,
-  );
+  SourceSite _configuredSource(SourceSite site) =>
+      SourceSite(site.id, _sourceNames[site.id] ?? site.name, site.description);
 
   void _loadSourceConfiguration() {
     List<String> readList(String key) {
@@ -187,6 +182,7 @@ class LocalStore extends ChangeNotifier {
         return [];
       }
     }
+
     _removedSources = readList('removedSources').toSet();
     _disabledSources = readList('disabledSources').toSet();
     try {
@@ -474,6 +470,7 @@ class LocalStore extends ChangeNotifier {
 
   bool get autoExport => !locked && (_bool('autoExport') ?? false);
   bool get exportPosters => !locked && (_bool('exportPosters') ?? false);
+  bool get allowInsecureTLS => !locked && (_bool('allowInsecureTLS') ?? false);
   String get source {
     if (locked) return '';
     final value = _string(_key('source')) ?? '';
@@ -631,6 +628,8 @@ class LocalStore extends ChangeNotifier {
       _setting('autoExport', value, admin: true);
   Future<void> setForceLogin(bool value) =>
       _setting('forceLogin', value, admin: true);
+  Future<void> setAllowInsecureTLS(bool value) =>
+      _setting('allowInsecureTLS', value, admin: true);
   Future<void> setHideVip(bool value) => _setting(_key('hideVip'), value);
   Future<void> setSource(String value) {
     if (!allowsSource(value)) return Future.error(StateError('当前用户没有此站源权限'));
@@ -1114,9 +1113,7 @@ class LocalStore extends ChangeNotifier {
         throw const FormatException('备份站源名称无效');
       }
       final clean = name.trim();
-      if (!SourceSite.isKnown(id) ||
-          clean.isEmpty ||
-          clean.runes.length > 30) {
+      if (!SourceSite.isKnown(id) || clean.isEmpty || clean.runes.length > 30) {
         throw const FormatException('备份站源名称无效');
       }
       names[id] = clean;
@@ -1283,6 +1280,7 @@ class LocalStore extends ChangeNotifier {
         _availableSourceIds(data['disabledSources'], '停用记录'),
       ),
       'sourceNames': jsonEncode(_availableSourceNames(data['sourceNames'])),
+      'allowInsecureTLS': _bool('allowInsecureTLS') ?? false,
     };
     final libraries = data['libraries'] as Map;
     for (final profile in profiles) {

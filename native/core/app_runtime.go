@@ -13,6 +13,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -44,9 +45,46 @@ type Config struct {
 	CDNURL           string
 }
 
+type httpChain struct {
+	base     *http.Transport
+	cdn      *cdnTransport
+	resolver *dnsResolver
+	browser  *huangguoBrowserTransport
+}
+
+type chainTransport struct {
+	current atomic.Pointer[httpChain]
+}
+
+func (transport *chainTransport) RoundTrip(request *http.Request) (*http.Response, error) {
+	chain := transport.current.Load()
+	if chain == nil {
+		return nil, errors.New("站源网络客户端尚未初始化")
+	}
+	return chain.browser.RoundTrip(request)
+}
+
+func (transport *chainTransport) CloseIdleConnections() {
+	if chain := transport.current.Load(); chain != nil {
+		chain.browser.CloseIdleConnections()
+	}
+}
+
+func isProductionNetworkTransport(transport http.RoundTripper) bool {
+	switch transport.(type) {
+	case *chainTransport, *huangguoBrowserTransport:
+		return true
+	default:
+		return false
+	}
+}
+
 type Downloader struct {
 	rankings              rankingCache
 	cfg                   Config
+	tlsMu                 sync.RWMutex
+	clientMu              sync.Mutex
+	chain                 *chainTransport
 	client                *http.Client
 	huangdouDetails       map[string]huangdouDetailEntry
 	huangdouDetailPending map[string]*huangdouDetailCall
@@ -166,35 +204,36 @@ type nativePlan struct {
 }
 
 type nativeEngine struct {
-	lanMu            sync.Mutex
-	lan              *nativeLANServer
-	settingsMu       sync.Mutex
-	settings         nativeResourceSettings
-	readMu           sync.Mutex
-	reads            map[string]nativeReadRequest
-	readCount        int
-	work             map[string]bool
-	downloads        *nativeDownloads
-	downloader       *Downloader
-	directory        string
-	mu               sync.Mutex
-	catalogs         map[string][]nativeDrama
-	catalogStates    map[string]nativeCatalogState
-	categoryOptions  map[string][]nativeCategory
-	hongguoCatalog   *hongguoCatalogState
-	recommendations  map[string]nativeRecommendationState
-	catalogSaveError error
-	sourceSaveError  error
-	covers           *nativeCoverCache
-	stream           *nativeStreamServer
-	playbacks        map[string]nativePlaybackChoice
-	playbackMu       sync.Mutex
-	playbackSequence int64
-	playbackCancel   context.CancelFunc
-	sourceTasks      map[string]*nativeSourceTask
-	sourceRecords    map[string]nativeSourceRecord
-	sourceCatalogMu  sync.Mutex
-	sourceCatalogs   map[string]chan struct{}
+	lanMu             sync.Mutex
+	lan               *nativeLANServer
+	settingsMu        sync.Mutex
+	settings          nativeResourceSettings
+	readMu            sync.Mutex
+	reads             map[string]nativeReadRequest
+	readCount         int
+	work              map[string]bool
+	downloads         *nativeDownloads
+	downloader        *Downloader
+	directory         string
+	mu                sync.Mutex
+	catalogs          map[string][]nativeDrama
+	catalogStates     map[string]nativeCatalogState
+	categoryOptions   map[string][]nativeCategory
+	hongguoCatalog    *hongguoCatalogState
+	recommendations   map[string]nativeRecommendationState
+	catalogSaveError  error
+	sourceSaveError   error
+	catalogDiskWrites int
+	covers            *nativeCoverCache
+	stream            *nativeStreamServer
+	playbacks         map[string]nativePlaybackChoice
+	playbackMu        sync.Mutex
+	playbackSequence  int64
+	playbackCancel    context.CancelFunc
+	sourceTasks       map[string]*nativeSourceTask
+	sourceRecords     map[string]nativeSourceRecord
+	sourceCatalogMu   sync.Mutex
+	sourceCatalogs    map[string]chan struct{}
 }
 
 var nativeState struct {
@@ -266,6 +305,73 @@ func nativeDramaCategory(drama Drama) string {
 	return ""
 }
 
+func (d *Downloader) buildHTTPClient() {
+	d.chain = &chainTransport{}
+	d.chain.current.Store(d.newHTTPChain())
+	d.client = &http.Client{Transport: d.chain, Timeout: 45 * time.Second,
+		CheckRedirect: func(request *http.Request, via []*http.Request) error {
+			if len(via) >= 10 {
+				return errors.New("站源重定向次数过多")
+			}
+			if len(via) > 0 && !strings.EqualFold(request.URL.Host, via[0].URL.Host) {
+				request.Header.Del("X-Preview-Token")
+				request.Header.Del("Cookie")
+				request.Header.Del("Authorization")
+			}
+			return nil
+		}}
+}
+
+func (d *Downloader) newHTTPChain() *httpChain {
+	transport := http.DefaultTransport.(*http.Transport).Clone()
+	transport.TLSClientConfig = &tls.Config{MinVersion: tls.VersionTLS12, InsecureSkipVerify: d.insecureTLS()}
+	transport.MaxIdleConnsPerHost = 8
+	transport.ResponseHeaderTimeout = 20 * time.Second
+	transport.Proxy = d.proxyRouter.proxy
+	resolver := newDNSResolver(transport)
+	cdn := newCDNTransport(transport, resolver)
+	return &httpChain{base: transport, cdn: cdn, resolver: resolver, browser: newHuangguoBrowserTransport(cdn, d)}
+}
+
+func (d *Downloader) currentDNSResolver() *dnsResolver {
+	if d.chain == nil {
+		return nil
+	}
+	if chain := d.chain.current.Load(); chain != nil {
+		return chain.resolver
+	}
+	return nil
+}
+
+func (d *Downloader) insecureTLS() bool {
+	d.tlsMu.RLock()
+	defer d.tlsMu.RUnlock()
+	return d.cfg.InsecureTLS
+}
+
+func (d *Downloader) setInsecureTLS(insecure bool) {
+	if d.chain == nil {
+		d.tlsMu.Lock()
+		d.cfg.InsecureTLS = insecure
+		d.tlsMu.Unlock()
+		return
+	}
+	d.clientMu.Lock()
+	defer d.clientMu.Unlock()
+	d.tlsMu.Lock()
+	changed := d.cfg.InsecureTLS != insecure
+	d.cfg.InsecureTLS = insecure
+	d.tlsMu.Unlock()
+	if !changed {
+		return
+	}
+	previous := d.chain.current.Load()
+	d.chain.current.Store(d.newHTTPChain())
+	if previous != nil {
+		previous.browser.CloseIdleConnections()
+	}
+}
+
 func newNativeEngine(directory string) (*nativeEngine, error) {
 	if !filepath.IsAbs(directory) {
 		return nil, errors.New("应用数据目录无效")
@@ -278,24 +384,7 @@ func newNativeEngine(directory string) (*nativeEngine, error) {
 	router := &proxyRouter{}
 	d := &Downloader{cfg: cfg, providerHosts: map[string]string{}, proxyRouter: router,
 		limiter: newRequestLimiter(3, 250*time.Millisecond), diagnostics: newDiagnosticLog(directory)}
-	transport := http.DefaultTransport.(*http.Transport).Clone()
-	transport.TLSClientConfig = &tls.Config{MinVersion: tls.VersionTLS12}
-	transport.MaxIdleConnsPerHost = 8
-	transport.ResponseHeaderTimeout = 20 * time.Second
-	transport.Proxy = router.proxy
-	cdn := newCDNTransport(transport, newDNSResolver(transport))
-	d.client = &http.Client{Transport: newHuangguoBrowserTransport(cdn, d), Timeout: 45 * time.Second,
-		CheckRedirect: func(request *http.Request, via []*http.Request) error {
-			if len(via) >= 10 {
-				return errors.New("站源重定向次数过多")
-			}
-			if len(via) > 0 && !strings.EqualFold(request.URL.Host, via[0].URL.Host) {
-				request.Header.Del("X-Preview-Token")
-				request.Header.Del("Cookie")
-				request.Header.Del("Authorization")
-			}
-			return nil
-		}}
+	d.buildHTTPClient()
 	engine := &nativeEngine{downloader: d, directory: directory, catalogs: map[string][]nativeDrama{}, catalogStates: map[string]nativeCatalogState{}}
 	engine.loadResourceSettings()
 	d.loadRankingCache()
@@ -813,7 +902,11 @@ func (engine *nativeEngine) nativeDetail(ctx context.Context, drama nativeDrama)
 		drama.Episodes = max(drama.Episodes, nativeNormalize(raw).Episodes)
 	}
 	warning := ""
-	if err := engine.saveDetailMetadata(drama); err != nil {
+	save := engine.saveDetailMetadata
+	if deferred, _ := ctx.Value(nativeDeferredDetailKey{}).(bool); deferred {
+		save = engine.saveDetailMetadataDeferred
+	}
+	if err := save(drama); err != nil {
 		warning = err.Error()
 	}
 	return map[string]any{"drama": drama, "chapters": chapters, "warning": warning}, nil

@@ -30,6 +30,19 @@ String sourceTimestamp(DateTime? value) {
   return '${local.month}/${local.day} ${two(local.hour)}:${two(local.minute)}';
 }
 
+String sourceProgressText(SourceStatus? status) {
+  final stage = status?.stage ?? '';
+  final label = stage.isEmpty ? '准备中' : stage;
+  final total = status?.total ?? 0;
+  if (status == null || total <= 0) return label;
+  final completed = status.completed;
+  final remaining = total - completed;
+  return '$label · 已处理 $completed/$total 部'
+      '${remaining > 0 ? ' · 剩余 $remaining 部' : ''}';
+}
+
+enum _BatchOutcome { succeeded, failed, skipped, notReached }
+
 class SourcesScreen extends StatefulWidget {
   const SourcesScreen({
     super.key,
@@ -54,10 +67,23 @@ class _SourcesScreenState extends State<SourcesScreen> {
   final _pending = <String>{};
   final _revisions = <String, int>{};
   final _expandedHealth = <String>{};
+  final _batchOutcomes = <String, _BatchOutcome>{};
+  final _batchActive = <String>{};
+  final _batchNames = <String, String>{};
+  final _batchFailures = <String>[];
+  final _manualUpdateIds = <String>{};
+  final _cardStorage = PageStorageBucket();
   Timer? _timer;
   bool _polling = false;
   bool _transferring = false;
+  int _batchRun = 0;
+  int _batchLaunched = 0;
+  int _batchSucceeded = 0;
+  int _batchFailed = 0;
+  int _batchSkipped = 0;
   int _ticks = 0;
+
+  bool get _batchTracking => _batchActive.isNotEmpty;
 
   @override
   void initState() {
@@ -101,6 +127,7 @@ class _SourcesScreenState extends State<SourcesScreen> {
               setState(() {
                 _statuses[source.id] = status;
                 _errors.remove(source.id);
+                _markManualOutcome(source, status);
               });
             } catch (error) {
               if (mounted &&
@@ -114,11 +141,19 @@ class _SourcesScreenState extends State<SourcesScreen> {
     } finally {
       _polling = false;
     }
+    _collectBatchFinished();
   }
 
-  Future<void> _run(SourceSite source, String operation) async {
+  Future<void> _run(
+    SourceSite source,
+    String operation, {
+    bool manual = false,
+  }) async {
     if (_pending.contains(source.id)) return;
     final epoch = widget.store.profileEpoch;
+    if (manual && (operation == 'update' || operation == 'resume')) {
+      _manualUpdateIds.add(source.id);
+    }
     setState(() {
       _pending.add(source.id);
       _errors.remove(source.id);
@@ -136,7 +171,14 @@ class _SourcesScreenState extends State<SourcesScreen> {
               drama: source.id == widget.drama?.source ? widget.drama : null,
             );
       if (mounted && epoch == widget.store.profileEpoch) {
-        setState(() => _statuses[source.id] = status);
+        setState(() {
+          _statuses[source.id] = status;
+          if (operation == 'cancel') {
+            _manualUpdateIds.remove(source.id);
+          } else {
+            _markManualOutcome(source, status);
+          }
+        });
       }
     } catch (error) {
       if (mounted && epoch == widget.store.profileEpoch) {
@@ -145,6 +187,167 @@ class _SourcesScreenState extends State<SourcesScreen> {
     } finally {
       if (mounted) setState(() => _pending.remove(source.id));
     }
+  }
+
+  void _markManualOutcome(SourceSite source, SourceStatus status) {
+    if (!_manualUpdateIds.contains(source.id) ||
+        _pending.contains(source.id) ||
+        status.running) {
+      return;
+    }
+    _manualUpdateIds.remove(source.id);
+    _batchOutcomes[source.id] = status.error.isEmpty
+        ? _BatchOutcome.succeeded
+        : _BatchOutcome.failed;
+  }
+
+  void _toggleUpdateAll() => unawaited(_updateAllSources());
+
+  bool _batchPending(SourceSite source) {
+    final outcome = _batchOutcomes[source.id];
+    if (outcome == null ||
+        outcome == _BatchOutcome.failed ||
+        outcome == _BatchOutcome.notReached) {
+      return true;
+    }
+    final error = _errors[source.id] ?? _statuses[source.id]?.error ?? '';
+    if (error.isNotEmpty) return true;
+    return _statuses[source.id]?.resumable == true;
+  }
+
+  String _batchOperation(SourceSite source) =>
+      _statuses[source.id]?.resumable == true ? 'resume' : 'update';
+
+  void _showAllUpdatedMessage() {
+    final messenger = ScaffoldMessenger.of(context);
+    messenger.showSnackBar(
+      SnackBar(
+        content: const Text('所有启用站源均已更新完成'),
+        action: SnackBarAction(
+          label: '强制全部重新更新',
+          onPressed: () => unawaited(_updateAllSources(force: true)),
+        ),
+      ),
+    );
+  }
+
+  Future<void> _updateAllSources({bool force = false}) async {
+    final epoch = widget.store.profileEpoch;
+    final enabled = [
+      for (final source in widget.store.managedSources)
+        if (widget.store.sourceEnabled(source.id)) source,
+    ];
+    if (enabled.isEmpty) {
+      _showMessage('没有启用的站源');
+      return;
+    }
+    final idle = [
+      for (final source in enabled)
+        if (!_pending.contains(source.id) &&
+            _statuses[source.id]?.running != true)
+          source,
+    ];
+    final sources = force
+        ? idle
+        : [
+            for (final source in idle)
+              if (_batchPending(source)) source,
+          ];
+    if (sources.isEmpty) {
+      if (_batchActive.isEmpty) _showAllUpdatedMessage();
+      return;
+    }
+    final run = ++_batchRun;
+    setState(() {
+      if (_batchActive.isEmpty) {
+        _batchLaunched = 0;
+        _batchSucceeded = 0;
+        _batchFailed = 0;
+        _batchFailures.clear();
+      }
+      _batchSkipped = idle.length - sources.length;
+      _batchLaunched += sources.length;
+      final launching = {for (final source in sources) source.id};
+      for (final source in idle) {
+        if (!launching.contains(source.id)) {
+          _batchOutcomes[source.id] = _BatchOutcome.skipped;
+        }
+      }
+      for (final source in sources) {
+        _batchActive.add(source.id);
+        _batchNames[source.id] = source.name;
+      }
+    });
+    for (final source in sources) {
+      unawaited(_run(source, _batchOperation(source)));
+    }
+    await _awaitBatchFinished(run, epoch);
+  }
+
+  Future<void> _awaitBatchFinished(int run, int epoch) async {
+    while (mounted &&
+        run == _batchRun &&
+        epoch == widget.store.profileEpoch &&
+        _batchActive.isNotEmpty) {
+      await _refresh();
+      if (_batchActive.isEmpty) break;
+      await Future<void>.delayed(const Duration(milliseconds: 250));
+    }
+    if (!mounted || run != _batchRun) return;
+    if (epoch != widget.store.profileEpoch) {
+      setState(_clearBatchSession);
+      return;
+    }
+    if (_batchActive.isNotEmpty) return;
+    _finishBatchSession();
+  }
+
+  void _collectBatchFinished() {
+    if (_batchActive.isEmpty) return;
+    final finished = <String>[];
+    for (final id in _batchActive) {
+      if (_pending.contains(id) || _statuses[id]?.running == true) continue;
+      finished.add(id);
+    }
+    if (finished.isEmpty) return;
+    for (final id in finished) {
+      _batchActive.remove(id);
+      final reason = _errors[id] ?? _statuses[id]?.error ?? '';
+      if (reason.isEmpty) {
+        _batchSucceeded++;
+        _batchOutcomes[id] = _BatchOutcome.succeeded;
+      } else {
+        _batchFailed++;
+        _batchOutcomes[id] = _BatchOutcome.failed;
+        _batchFailures.add('${_batchNames[id] ?? id}：$reason');
+      }
+    }
+    if (mounted) setState(() {});
+  }
+
+  void _clearBatchSession() {
+    _batchActive.clear();
+    _batchNames.clear();
+    _batchLaunched = 0;
+    _batchSucceeded = 0;
+    _batchFailed = 0;
+    _batchSkipped = 0;
+    _batchFailures.clear();
+  }
+
+  void _finishBatchSession() {
+    final succeeded = _batchSucceeded;
+    final failed = _batchFailed;
+    final skipped = _batchSkipped;
+    final failures = List<String>.from(_batchFailures);
+    _clearBatchSession();
+    if (mounted) setState(() {});
+    final summary =
+        '一键更新完成：成功 $succeeded 个、失败 $failed 个、'
+        '跳过 $skipped 个';
+    _showMessage(
+      failures.isEmpty ? summary : '$summary\n${failures.join('\n')}',
+    );
   }
 
   Future<void> _copy(SourceSite source, SourceStatus status) async {
@@ -356,9 +559,7 @@ class _SourcesScreenState extends State<SourcesScreen> {
                 children: [
                   Text('站点地址：$url'),
                   const SizedBox(height: 8),
-                  const Text(
-                    '仅导入本人已完成验证或已获授权的站点会话。会话只在本次运行内有效，关闭应用后需重新导入。',
-                  ),
+                  const Text('仅导入本人已完成验证或已获授权的站点会话。会话只在本次运行内有效，关闭应用后需重新导入。'),
                   TextField(
                     controller: origin,
                     decoration: const InputDecoration(
@@ -368,9 +569,7 @@ class _SourcesScreenState extends State<SourcesScreen> {
                   TextField(
                     controller: cookie,
                     maxLines: 2,
-                    decoration: const InputDecoration(
-                      labelText: '同域 Cookie',
-                    ),
+                    decoration: const InputDecoration(labelText: '同域 Cookie'),
                   ),
                   TextField(
                     controller: userAgent,
@@ -462,11 +661,9 @@ class _SourcesScreenState extends State<SourcesScreen> {
     }
   }
 
-  Future<Map<String, String>?> _verifySource(String url) =>
-      const MethodChannel('duanju/device').invokeMapMethod<String, String>(
-        'verifySource',
-        {'url': url.trim()},
-      );
+  Future<Map<String, String>?> _verifySource(String url) => const MethodChannel(
+    'duanju/device',
+  ).invokeMapMethod<String, String>('verifySource', {'url': url.trim()});
 
   Future<void> _openInBrowser(String url) async {
     final address = url.trim();
@@ -508,7 +705,7 @@ class _SourcesScreenState extends State<SourcesScreen> {
     } catch (_) {}
     if (status == null || status.running) return;
     if (!_resumableJob(status)) return;
-    await _run(source, 'resume');
+    await _run(source, 'resume', manual: true);
   }
 
   bool _resumableJob(SourceStatus status) =>
@@ -544,24 +741,33 @@ class _SourcesScreenState extends State<SourcesScreen> {
           title: const Text('站源管理'),
           actions: [
             if (widget.store.profile.admin) ...[
-              IconButton(
-                tooltip: '导出站源结果',
-                onPressed: _transferring ? null : _exportSourceResults,
-                icon: const Icon(Icons.file_upload_outlined),
-              ),
-              IconButton(
-                tooltip: '导入站源结果',
-                onPressed: _transferring ? null : _importSourceResults,
-                icon: const Icon(Icons.file_download_outlined),
-              ),
               PopupMenuButton<String>(
-                tooltip: '添加内置站源',
-                icon: const Icon(Icons.add_rounded),
-                onSelected: _restoreSource,
+                tooltip: '站源结果与内置站源',
+                icon: const Icon(Icons.more_vert),
+                onSelected: (value) {
+                  if (value == 'export') {
+                    unawaited(_exportSourceResults());
+                  } else if (value == 'import') {
+                    unawaited(_importSourceResults());
+                  } else if (value.startsWith('restore:')) {
+                    unawaited(_restoreSource(value.substring(8)));
+                  }
+                },
                 itemBuilder: (_) => [
+                  PopupMenuItem(
+                    value: 'export',
+                    enabled: !_transferring,
+                    child: const Text('导出站源结果'),
+                  ),
+                  PopupMenuItem(
+                    value: 'import',
+                    enabled: !_transferring,
+                    child: const Text('导入站源结果'),
+                  ),
+                  const PopupMenuDivider(),
                   for (final source in widget.store.removedSources)
                     PopupMenuItem(
-                      value: source.id,
+                      value: 'restore:${source.id}',
                       child: Text('恢复 ${source.name}'),
                     ),
                   if (widget.store.removedSources.isEmpty)
@@ -570,6 +776,11 @@ class _SourcesScreenState extends State<SourcesScreen> {
                       child: Text('所有内置站源已添加'),
                     ),
                 ],
+              ),
+              TextButton.icon(
+                onPressed: _toggleUpdateAll,
+                icon: const Icon(Icons.bolt_rounded),
+                label: const Text('一键更新'),
               ),
             ],
           ],
@@ -588,6 +799,16 @@ class _SourcesScreenState extends State<SourcesScreen> {
                       '添加可恢复当前版本内置解析器；可编辑显示名称、启停或移除。更新会持续推进目录和资料，离开此页后继续运行。',
                     ),
                   ),
+                  if (_batchTracking)
+                    Padding(
+                      padding: const EdgeInsets.only(bottom: 16),
+                      child: Text(
+                        '一键更新：本会话 $_batchLaunched 个源 · 已完成 $_batchSucceeded · 失败 $_batchFailed',
+                        style: TextStyle(
+                          color: Theme.of(context).colorScheme.primary,
+                        ),
+                      ),
+                    ),
                   if (sources.isEmpty)
                     const Padding(
                       padding: EdgeInsets.all(24),
@@ -610,7 +831,10 @@ class _SourcesScreenState extends State<SourcesScreen> {
                           childrenPadding: const EdgeInsets.all(8),
                           children: [
                             for (final source in group.sources)
-                              _sourceCard(source),
+                              PageStorage(
+                                bucket: _cardStorage,
+                                child: _sourceCard(source),
+                              ),
                           ],
                         ),
                       )
@@ -698,13 +922,17 @@ class _SourcesScreenState extends State<SourcesScreen> {
               children: [
                 FilledButton.icon(
                   key: ValueKey('update-${source.id}'),
-                  onPressed: enabled ? () => _run(source, 'update') : null,
+                  onPressed: enabled
+                      ? () => _run(source, 'update', manual: true)
+                      : null,
                   icon: const Icon(Icons.sync_rounded),
                   label: const Text('更新'),
                 ),
                 if (status != null && _resumableJob(status))
                   OutlinedButton.icon(
-                    onPressed: enabled ? () => _run(source, 'resume') : null,
+                    onPressed: enabled
+                        ? () => _run(source, 'resume', manual: true)
+                        : null,
                     icon: const Icon(Icons.play_arrow_rounded),
                     label: const Text('接着更新'),
                   ),
@@ -752,9 +980,7 @@ class _SourcesScreenState extends State<SourcesScreen> {
                     : null,
               ),
               const SizedBox(height: 8),
-              Text(
-                '${status?.stage ?? '准备中'}${(status?.total ?? 0) > 0 ? ' · ${status!.completed}/${status.total}' : ''}',
-              ),
+              Text(sourceProgressText(status)),
             ] else if (status != null && status.stage.isNotEmpty) ...[
               const SizedBox(height: 12),
               Text(

@@ -40,6 +40,7 @@ class LocalSnapshot {
     'removedSources',
     'disabledSources',
     'sourceNames',
+    'allowInsecureTLS',
   };
   final SharedPreferences preferences;
   Map<String, Object> _values = {};
@@ -86,6 +87,7 @@ class LocalSnapshot {
         'sourceGateEnabled',
         'sourceGateOff',
         'forceLogin',
+        'allowInsecureTLS',
       }.contains(entry.key.split('.').last);
       if (!owns(entry.key) ||
           (boolean ? entry.value is! bool : entry.value is! String)) {

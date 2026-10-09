@@ -245,6 +245,7 @@ func (engine *nativeEngine) saveCatalogCache(source string, result *nativeCatalo
 }
 
 func (engine *nativeEngine) writeCatalogDiskLocked() error {
+	engine.catalogDiskWrites++
 	body, err := json.Marshal(nativeCatalogDisk{Version: 3, Catalogs: engine.catalogs, States: engine.catalogStates, Categories: engine.categoryOptions, HongguoApp: engine.hongguoCatalog, Recommendations: engine.recommendations})
 	if err == nil && len(body) > nativeCatalogMaxBytes {
 		err = errNativeCatalogLimit
@@ -285,6 +286,14 @@ func writeNativeCacheFile(path string, data []byte) error {
 }
 
 func (engine *nativeEngine) saveDetailMetadata(drama nativeDrama) error {
+	return engine.mergeDetailMetadata(drama, false)
+}
+
+func (engine *nativeEngine) saveDetailMetadataDeferred(drama nativeDrama) error {
+	return engine.mergeDetailMetadata(drama, true)
+}
+
+func (engine *nativeEngine) mergeDetailMetadata(drama nativeDrama, deferred bool) error {
 	engine.mu.Lock()
 	defer engine.mu.Unlock()
 	changed := false
@@ -296,8 +305,12 @@ func (engine *nativeEngine) saveDetailMetadata(drama nativeDrama) error {
 			}
 		}
 	}
-	if changed {
-		return engine.writeCatalogDiskLocked()
+	if !changed {
+		return nil
 	}
-	return nil
+	if deferred {
+		engine.markSourceCatalogDirtyLocked(drama.Source)
+		return nil
+	}
+	return engine.writeCatalogDiskLocked()
 }

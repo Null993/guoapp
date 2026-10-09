@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 
 import 'core_bridge.dart';
@@ -94,7 +96,9 @@ class _ResourceSettingsScreenState extends State<ResourceSettingsScreen> {
   ResourceSettings? _settings;
   String _mode = 'auto';
   int _catalog = 3, _interval = 250, _downloads = 2;
-  bool _folders = false, _busy = false, _showProxy = false;
+  bool _folders = false;
+  bool _allowInsecureTLS = false;
+  bool _busy = false, _showProxy = false;
   String? _error;
   bool get _allowed =>
       widget.store.profileEpoch == _epoch &&
@@ -125,11 +129,21 @@ class _ResourceSettingsScreenState extends State<ResourceSettingsScreen> {
         _interval = settings.catalogIntervalMs;
         _downloads = settings.downloadConcurrency;
         _folders = settings.downloadBySource;
+        _allowInsecureTLS = settings.allowInsecureTLS;
         _error = null;
       });
+      if (widget.store.allowInsecureTLS != settings.allowInsecureTLS) {
+        unawaited(_syncAllowInsecureTLS(settings.allowInsecureTLS));
+      }
     } catch (error) {
       if (mounted) setState(() => _error = error.toString());
     }
+  }
+
+  Future<void> _syncAllowInsecureTLS(bool value) async {
+    try {
+      await widget.store.setAllowInsecureTLS(value);
+    } catch (_) {}
   }
 
   Future<void> _save() async {
@@ -147,8 +161,10 @@ class _ResourceSettingsScreenState extends State<ResourceSettingsScreen> {
           catalogIntervalMs: _interval,
           downloadConcurrency: _downloads,
           downloadBySource: _folders,
+          allowInsecureTLS: _allowInsecureTLS,
         ),
       );
+      await widget.store.setAllowInsecureTLS(_allowInsecureTLS);
       if (!mounted || !_allowed) return;
       setState(() => _settings = settings);
       ScaffoldMessenger.of(
@@ -277,6 +293,19 @@ class _ResourceSettingsScreenState extends State<ResourceSettingsScreen> {
                     onChanged: _busy
                         ? null
                         : (value) => setState(() => _folders = value),
+                  ),
+                  SwitchListTile(
+                    contentPadding: EdgeInsets.zero,
+                    value: _allowInsecureTLS,
+                    title: const Text('允许本机代理替换证书（关闭 TLS 校验）'),
+                    subtitle: const Text(
+                      '仅在 Clash、v2ray 等本机代理替换了站点证书、导致请求报「证书不被信任」时使用；'
+                      '开启后不再校验站点证书，存在安全风险，请只在自己的代理上使用。'
+                      '保存后对后续新建的连接立即生效，无需重启。',
+                    ),
+                    onChanged: _busy
+                        ? null
+                        : (value) => setState(() => _allowInsecureTLS = value),
                   ),
                   if (_error != null)
                     Padding(

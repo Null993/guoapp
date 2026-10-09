@@ -768,6 +768,7 @@ class _HomeScreenState extends State<HomeScreen> {
       key: ValueKey(drama.id),
       drama: drama,
       repository: widget.repository,
+      sourceName: sourceDisplayName(drama.source, widget.store.managedSources),
       focusNode: focusNode,
       onFocus: onFocus,
       onTap: () => _selectionMode ? _selectDrama(drama) : _openDrama(drama),

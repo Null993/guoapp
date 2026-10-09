@@ -319,6 +319,17 @@ class _CachedCoverImageState extends State<CachedCoverImage> {
   );
 }
 
+String sourceDisplayName(
+  String source, [
+  Iterable<SourceSite> sites = const [],
+]) {
+  if (source.isEmpty) return '';
+  for (final site in sites) {
+    if (site.id == source && site.name.isNotEmpty) return site.name;
+  }
+  return SourceSite.isKnown(source) ? SourceSite.byId(source).name : '';
+}
+
 class DramaTile extends StatelessWidget {
   const DramaTile({
     super.key,
@@ -326,6 +337,7 @@ class DramaTile extends StatelessWidget {
     required this.repository,
     required this.onTap,
     this.subtitle,
+    this.sourceName,
     this.focusNode,
     this.onFocus,
     this.actions,
@@ -338,6 +350,7 @@ class DramaTile extends StatelessWidget {
   final AppRepository repository;
   final VoidCallback onTap;
   final String? subtitle;
+  final String? sourceName;
   final FocusNode? focusNode;
   final VoidCallback? onFocus;
   final Widget? actions;
@@ -365,6 +378,9 @@ class DramaTile extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final television = AppLayout.isTelevision(context);
+    final source = subtitle != null
+        ? ''
+        : sourceName ?? sourceDisplayName(drama.source);
     final content = Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
@@ -446,15 +462,36 @@ class DramaTile extends StatelessWidget {
           padding: const EdgeInsets.symmetric(horizontal: 2),
           child: SizedBox(
             height: subtitleHeight(context),
-            child: Text(
-              subtitle ?? drama.category,
-              maxLines: 1,
-              overflow: TextOverflow.ellipsis,
-              style: TextStyle(
-                fontSize: television ? 14 : 12,
-                height: 1.3,
-                color: Theme.of(context).colorScheme.onSurfaceVariant,
-              ),
+            child: Row(
+              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+              children: [
+                Flexible(
+                  child: Text(
+                    subtitle ?? drama.category,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: TextStyle(
+                      fontSize: television ? 14 : 12,
+                      height: 1.3,
+                      color: Theme.of(context).colorScheme.onSurfaceVariant,
+                    ),
+                  ),
+                ),
+                if (source.isNotEmpty)
+                  Flexible(
+                    child: Text(
+                      source,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      textAlign: TextAlign.right,
+                      style: TextStyle(
+                        fontSize: television ? 12 : 11,
+                        height: 1.3,
+                        color: Theme.of(context).colorScheme.outline,
+                      ),
+                    ),
+                  ),
+              ],
             ),
           ),
         ),

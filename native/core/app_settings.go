@@ -20,6 +20,7 @@ type nativeResourceSettings struct {
 	CatalogIntervalMS   int    `json:"catalogIntervalMs"`
 	DownloadConcurrency int    `json:"downloadConcurrency"`
 	DownloadBySource    bool   `json:"downloadBySource"`
+	AllowInsecureTLS    bool   `json:"allowInsecureTLS"`
 	Warning             string `json:"warning,omitempty"`
 	SystemProxyStatus   string `json:"systemProxyStatus,omitempty"`
 }
@@ -122,6 +123,7 @@ func (engine *nativeEngine) resourceSettings() nativeResourceSettings {
 }
 
 func (engine *nativeEngine) applyResourceSettings(settings nativeResourceSettings) {
+	engine.downloader.setInsecureTLS(settings.AllowInsecureTLS)
 	router := engine.downloader.proxyRouter
 	manual, _ := url.Parse(settings.ProxyURL)
 	router.mu.Lock()

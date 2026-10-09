@@ -27,6 +27,7 @@ import 'playback_preloader.dart';
 import 'playback_recovery.dart';
 import 'playback_preferences.dart';
 import 'player_controls.dart';
+import 'remote_widgets.dart';
 import 'player_interactions.dart';
 import 'player_menu.dart';
 import 'television_controls.dart';
@@ -108,6 +109,7 @@ class _PlayerScreenState extends State<PlayerScreen>
   bool _automaticFullscreenSuppressed = false;
   bool _panelOpen = false;
   int _mobileTab = 0;
+  int _panelTab = 0;
   bool _autoAdvance = true;
   bool? _systemFullscreen;
   Orientation? _lastOrientation;
@@ -2013,6 +2015,11 @@ class _PlayerScreenState extends State<PlayerScreen>
     );
   }
 
+  String _synopsisText(Drama drama) {
+    final text = drama.description.trim();
+    return text.isEmpty ? '暂无简介' : text;
+  }
+
   Widget _mobileSynopsis() {
     final drama = widget.detail.drama;
     final colors = Theme.of(context).colorScheme;
@@ -2023,7 +2030,7 @@ class _PlayerScreenState extends State<PlayerScreen>
         drama.releaseLabel,
       if (drama.category.isNotEmpty) drama.category,
     ];
-    final body = drama.description.trim().isEmpty ? '暂无简介' : drama.description;
+    final body = _synopsisText(drama);
     return ColoredBox(
       color: colors.surface,
       child: ListView(
@@ -2179,14 +2186,114 @@ class _PlayerScreenState extends State<PlayerScreen>
     );
   }
 
-  Widget _episodePanel({bool compact = false}) => ColoredBox(
-    color: Theme.of(context).colorScheme.surface,
-    child: PlayerEpisodeGrid(
-      episodes: widget.detail.episodes,
-      currentIndex: _index,
-      compact: compact,
-      title: compact ? '剧集' : '选集',
-      onSelected: (index) => _play(index),
+  Widget _panelTabs() => Padding(
+    padding: const EdgeInsets.fromLTRB(12, 8, 12, 8),
+    child: Row(
+      children: [
+        Expanded(child: _panelTabButton(0, '选集')),
+        const SizedBox(width: 8),
+        Expanded(child: _panelTabButton(1, '简介')),
+      ],
     ),
   );
+
+  Widget _panelTabButton(int value, String label) {
+    final colors = Theme.of(context).colorScheme;
+    final selected = _panelTab == value;
+    return RemoteTarget(
+      key: ValueKey('player-panel-tab-$value'),
+      label: label,
+      selected: selected,
+      radius: 10,
+      borderWidth: 2,
+      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 8),
+      onPressed: () {
+        if (_panelTab == value) return;
+        setState(() => _panelTab = value);
+      },
+      child: Center(
+        child: Text(
+          label,
+          style: TextStyle(
+            fontSize: 14,
+            fontWeight: selected ? FontWeight.w700 : FontWeight.w500,
+            color: selected ? colors.onPrimaryContainer : colors.onSurface,
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _panelSynopsis() {
+    final drama = widget.detail.drama;
+    final colors = Theme.of(context).colorScheme;
+    final meta = [
+      SourceSite.byId(drama.source).name,
+      if (drama.episodes > 0) '共 ${drama.episodes} 集',
+      if (drama.category.isNotEmpty) drama.category,
+      if (drama.tags.isNotEmpty) drama.tags.take(4).join('、'),
+    ];
+    return ListView(
+      key: const ValueKey('player-panel-synopsis'),
+      padding: const EdgeInsets.fromLTRB(14, 4, 14, 16),
+      children: [
+        Text(
+          drama.title,
+          style: Theme.of(
+            context,
+          ).textTheme.titleMedium?.copyWith(fontWeight: FontWeight.w700),
+        ),
+        if (meta.isNotEmpty) ...[
+          const SizedBox(height: 6),
+          Text(
+            meta.join(' · '),
+            style: TextStyle(color: colors.onSurfaceVariant, fontSize: 12),
+          ),
+        ],
+        const SizedBox(height: 10),
+        Text(
+          _synopsisText(drama),
+          style: const TextStyle(fontSize: 13, height: 1.55),
+        ),
+        if (widget.detail.warning.isNotEmpty) ...[
+          const SizedBox(height: 12),
+          Text(widget.detail.warning, style: TextStyle(color: colors.error)),
+        ],
+      ],
+    );
+  }
+
+  Widget _episodePanel({bool compact = false}) {
+    final colors = Theme.of(context).colorScheme;
+    if (compact) {
+      return ColoredBox(
+        color: colors.surface,
+        child: PlayerEpisodeGrid(
+          episodes: widget.detail.episodes,
+          currentIndex: _index,
+          compact: true,
+          title: '剧集',
+          onSelected: (index) => _play(index),
+        ),
+      );
+    }
+    return ColoredBox(
+      color: colors.surface,
+      child: Column(
+        children: [
+          _panelTabs(),
+          Expanded(
+            child: _panelTab == 0
+                ? PlayerEpisodeGrid(
+                    episodes: widget.detail.episodes,
+                    currentIndex: _index,
+                    title: '选集',
+                    onSelected: (index) => _play(index),
+                  )
+                : _panelSynopsis(),
+          ),
+        ],
+      ),
+    );
+  }
 }
