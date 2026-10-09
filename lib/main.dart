@@ -24,7 +24,32 @@ import 'diary_service.dart';
 
 Future<void> main(List<String> arguments) async {
   WidgetsFlutterBinding.ensureInitialized();
-  DiaryService.add('[App] 应用启动，版本: 0.2.64+71, 平台: ${Platform.operatingSystem}');
+  FlutterError.onError = (details) {
+    DiaryService.add(
+      '[Error] ${details.exceptionAsString()}\n${details.stack ?? ''}',
+    );
+    FlutterError.presentError(details);
+  };
+  ErrorWidget.builder = (details) => ColoredBox(
+    color: const Color(0xFF3A2A2A),
+    child: Directionality(
+      textDirection: TextDirection.ltr,
+      child: Padding(
+        padding: const EdgeInsets.all(12),
+        child: Text(
+          '界面渲染失败：${details.exceptionAsString()}',
+          style: const TextStyle(color: Color(0xFFFFB4A9), fontSize: 12),
+          maxLines: 4,
+          overflow: TextOverflow.ellipsis,
+        ),
+      ),
+    ),
+  );
+  WidgetsBinding.instance.platformDispatcher.onError = (error, stack) {
+    DiaryService.add('[Error] $error\n$stack');
+    return false;
+  };
+  DiaryService.add('[App] 应用启动，版本: 0.2.65+72, 平台: ${Platform.operatingSystem}');
   if (Platform.isAndroid) {
     await SystemChrome.setEnabledSystemUIMode(SystemUiMode.edgeToEdge);
     SystemChrome.setSystemUIOverlayStyle(AppTheme.systemBars(Brightness.dark));

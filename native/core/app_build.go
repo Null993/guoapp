@@ -4,6 +4,8 @@ import "errors"
 
 var buildAllSources = "false"
 
+const nativeAppVersion = "0.2.65"
+
 var errNativeBuildSource = errors.New("当前版本不包含此站源")
 
 func nativeSourceAvailable(source string) bool {
@@ -52,6 +54,10 @@ func nativeAuthorizeInput(input nativeInput) error {
 		}
 		if input.Action == "sourceJob" && input.Drama.ID != "" &&
 			(!nativeDramaAvailable(input.Drama) || sourceFromDramaID(input.Drama.ID) != canonicalProviderSource(input.Source)) {
+			return errNativeBuildSource
+		}
+	case "exportSourceResults", "importSourceResults":
+		if !nativeSourceAvailable(sourceHongguo) {
 			return errNativeBuildSource
 		}
 	case "cover", "prepareCover", "detail", "metadata", "resolve", "preload", "prepareHandoff", "enqueueDownloads", "localPlayback":

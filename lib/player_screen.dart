@@ -125,6 +125,7 @@ class _PlayerScreenState extends State<PlayerScreen>
   String _loadingMessage = '正在准备播放';
   String? _error;
   String? _saveWarning;
+  String? _lastPlayerLog;
   PlaybackPlan? _plan;
   double _speed = 1;
   double _aspectRatio = 9 / 16;
@@ -233,9 +234,16 @@ class _PlayerScreenState extends State<PlayerScreen>
     _subscriptions.add(
       _player.stream.error.listen((error) {
         if (_enhancement.handlePlaybackError(error)) return;
+        _logPlayerFailure(error);
         if (!_closed && _acceptErrors && mounted && error.trim().isNotEmpty) {
           _queueRecovery();
         }
+      }),
+    );
+    _subscriptions.add(
+      _player.stream.log.listen((entry) {
+        if (entry.level != 'error' && entry.level != 'fatal') return;
+        _logPlayerFailure('${entry.prefix}: ${entry.text}');
       }),
     );
     _subscriptions.add(
@@ -749,6 +757,59 @@ class _PlayerScreenState extends State<PlayerScreen>
     _applyLifecycleVisibility();
   }
 
+  void _logPlayerFailure(String text) {
+    final message = text.trim();
+    if (message.isEmpty || message == _lastPlayerLog) return;
+    _lastPlayerLog = message;
+    final plan = _plan;
+    final context = plan == null
+        ? ''
+        : '（线路=${plan.routeIndex + 1}/${plan.routeCount}, '
+              '清晰度=${plan.quality > 0 ? plan.quality : '自动'}, '
+              '${plan.local ? '本地' : '在线'}）';
+    DiaryService.add('[Play] 播放器报错$context: $message');
+  }
+
+  Future<void> _logProxyDiagnostics(PlaybackPlan plan) async {
+    if (plan.local) return;
+    try {
+      final uri = Uri.tryParse(plan.url);
+      if (uri == null ||
+          uri.host != '127.0.0.1' ||
+          uri.pathSegments.length != 2) {
+        return;
+      }
+      final status = uri.replace(
+        pathSegments: [uri.pathSegments.first, '__status'],
+      );
+      final client = HttpClient()
+        ..connectionTimeout = const Duration(seconds: 1);
+      try {
+        final request = await client.getUrl(status);
+        final response = await request.close();
+        if (response.statusCode != 200) {
+          DiaryService.add('[Proxy] 本地代理诊断不可用: HTTP ${response.statusCode}');
+          return;
+        }
+        final body = await response.transform(utf8.decoder).join();
+        final lines = body
+            .split('\n')
+            .where((line) => line.trim().isNotEmpty)
+            .toList();
+        final tail = lines.length > 14
+            ? lines.sublist(lines.length - 14)
+            : lines;
+        for (final line in tail) {
+          DiaryService.add('[Proxy] ${line.trim()}');
+        }
+      } finally {
+        client.close(force: true);
+      }
+    } catch (error) {
+      DiaryService.add('[Proxy] 本地代理诊断读取失败: $error');
+    }
+  }
+
   void _queueRecovery() {
     if (_closed || !_acceptErrors || _error != null) {
       return;
@@ -792,6 +853,15 @@ class _PlayerScreenState extends State<PlayerScreen>
     final action = current.local
         ? PlaybackRecoveryAction.stop
         : _recovery.next(current);
+    DiaryService.add(
+      '[Play] 触发自动恢复: 第${_recovery.attempts}次, 动作=${action.name}, '
+      '线路=${current.routeIndex + 1}/${current.routeCount}, '
+      '清晰度=${current.quality > 0 ? current.quality : '自动'}, '
+      '位置=${position.toStringAsFixed(1)}s, 最后错误=${_lastPlayerLog ?? '未记录'}',
+    );
+    if (!current.local) {
+      await _logProxyDiagnostics(current);
+    }
     if (action == PlaybackRecoveryAction.stop) {
       _resumePosition = position;
       final ticket = _generation;
@@ -810,6 +880,10 @@ class _PlayerScreenState extends State<PlayerScreen>
         });
       } catch (_) {}
       if (mounted && !_closed && ticket == _generation) {
+        DiaryService.add(
+          '[Play] 自动恢复停止: 已尝试 ${current.routeCount} 条线路/'
+          '${_recovery.attempts} 次, 最后错误=${_lastPlayerLog ?? '未记录'}',
+        );
         setState(() {
           _loading = false;
           _localFailure = current.local;
@@ -1045,7 +1119,14 @@ class _PlayerScreenState extends State<PlayerScreen>
         _plan = plan;
         installed = true;
         _acceptErrors = true;
-        DiaryService.add('[Play] 调用 _player.open: url=${plan.url}, headers=${plan.headers.keys.toList()}');
+        _lastPlayerLog = null;
+        DiaryService.add(
+          '[Play] 调用 _player.open: 线路=${plan.routeIndex + 1}/${plan.routeCount}, '
+          '清晰度=${plan.quality > 0 ? plan.quality : '自动'}, '
+          '${plan.local ? '本地' : '在线'}, '
+          '解密密钥=${plan.decryptionKey.isEmpty ? '无' : '有'}, '
+          'url=${plan.url}, headers=${plan.headers.keys.toList()}',
+        );
         await _player.open(
           Media(
             plan.url,
@@ -1075,7 +1156,16 @@ class _PlayerScreenState extends State<PlayerScreen>
         }
       });
     } catch (error) {
-      DiaryService.add('[Play] 捕获播放流程错误: $error');
+      final failed = prepared;
+      final route = failed == null
+          ? ''
+          : '（线路=${failed.routeIndex + 1}/${failed.routeCount}, '
+                '清晰度=${failed.quality > 0 ? failed.quality : '自动'}, '
+                'url=${failed.url}）';
+      DiaryService.add('[Play] 播放流程异常: ${error.runtimeType}: $error$route');
+      if (failed != null) {
+        await _logProxyDiagnostics(failed);
+      }
       if (!_closed && mounted && ticket == _generation) {
         if (prepared != null && identical(_plan, prepared)) {
           _acceptErrors = true;

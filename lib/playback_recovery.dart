@@ -7,6 +7,9 @@ class PlaybackRecovery {
   int _attempts = 0;
   bool _refreshed = false;
 
+  int get attempts => _attempts;
+  bool get refreshed => _refreshed;
+
   void reset() {
     _attempts = 0;
     _refreshed = false;

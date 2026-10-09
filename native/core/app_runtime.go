@@ -119,6 +119,7 @@ type nativeInput struct {
 	Command          string                  `json:"command"`
 	Action           string                  `json:"action"`
 	Directory        string                  `json:"directory"`
+	Path             string                  `json:"path"`
 	Source           string                  `json:"source"`
 	Origin           string                  `json:"origin"`
 	Cookie           string                  `json:"cookie"`
@@ -375,7 +376,7 @@ func nativeDispatch(input nativeInput) (any, error) {
 			nativeState.engine = engine
 		}
 		nativeState.Unlock()
-		return map[string]any{"version": "0.2.17", "standalone": true, "allSources": buildAllSources == "true"}, nil
+		return map[string]any{"version": nativeAppVersion, "standalone": true, "allSources": buildAllSources == "true"}, nil
 	}
 	engine := nativeState.engine
 	nativeState.Unlock()
@@ -384,6 +385,8 @@ func nativeDispatch(input nativeInput) (any, error) {
 	}
 	duration := 60 * time.Second
 	if input.Action == "moveDownloads" {
+		duration = 10 * time.Minute
+	} else if input.Action == "importSourceResults" || input.Action == "exportSourceResults" {
 		duration = 10 * time.Minute
 	} else if input.Action == "danmaku" {
 		duration = 10 * time.Second
@@ -472,6 +475,10 @@ func nativeDispatch(input nativeInput) (any, error) {
 		return map[string]any{"items": items}, err
 	case "sourceStatus":
 		return engine.sourceStatus(input.Source), nil
+	case "exportSourceResults":
+		return engine.exportSourceResults(input.Path)
+	case "importSourceResults":
+		return engine.importSourceResults(input.Path)
 	case "sourceAccess":
 		return engine.downloader.sourceAccessStatus(input.Source), nil
 	case "saveSourceAccess":

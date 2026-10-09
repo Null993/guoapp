@@ -136,6 +136,10 @@ abstract class AppRepository {
   }) async => throw AppFailure('当前环境不支持站点会话');
   Future<void> clearSourceAccess(String source) async =>
       throw AppFailure('当前环境不支持站点会话');
+  Future<Map<String, dynamic>> exportSourceResults(String path) async =>
+      throw AppFailure('当前环境不支持导出站源结果');
+  Future<Map<String, dynamic>> importSourceResults(String path) async =>
+      throw AppFailure('当前环境不支持导入站源结果');
   Future<List<String>> suggestions(String query) async => const [];
   Future<Map<String, dynamic>> storage() async => {};
   Future<String> downloadDirectory() async =>
@@ -498,6 +502,24 @@ class NativeRepository extends AppRepository {
     await _call({'action': 'clearSourceAccess', 'source': source});
   }
 
+  @override
+  Future<Map<String, dynamic>> exportSourceResults(String path) async {
+    _requireAdmin();
+    return _call({'action': 'exportSourceResults', 'path': path});
+  }
+
+  @override
+  Future<Map<String, dynamic>> importSourceResults(String path) async {
+    _requireAdmin();
+    return _call({'action': 'importSourceResults', 'path': path});
+  }
+
+  void _requireAdmin() {
+    if (access != null && (access!.locked || !access!.profile.admin)) {
+      throw AppFailure('仅管理员可以导出或导入站源结果');
+    }
+  }
+
   void _authorize(String source, {bool download = false}) {
     if (!SourceSite.isAvailable(source)) {
       throw AppFailure('当前版本不包含此站源');
@@ -625,6 +647,9 @@ class NativeRepository extends AppRepository {
           throw AppFailure('仅管理员可以设置站点会话');
         }
       }
+      if (action == 'exportSourceResults' || action == 'importSourceResults') {
+        _requireAdmin();
+      }
       if ({
         'cover',
         'prepareCover',
@@ -665,6 +690,9 @@ class NativeRepository extends AppRepository {
               ? 15
               : action == 'preload'
               ? 20
+              : action == 'exportSourceResults' ||
+                    action == 'importSourceResults'
+              ? 300
               : 70,
         ),
       );
