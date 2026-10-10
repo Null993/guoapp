@@ -1,6 +1,10 @@
 import 'package:duanju_app/local_store.dart';
 import 'package:duanju_app/main.dart';
+import 'package:duanju_app/detail_screen.dart';
+import 'package:duanju_app/follow_state.dart';
 import 'package:duanju_app/models.dart';
+import 'package:duanju_app/playback_launch_screen.dart';
+import 'package:duanju_app/remote_widgets.dart';
 import 'package:duanju_app/app_build.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -14,6 +18,19 @@ void main() {
     return LocalStore(await SharedPreferences.getInstance());
   }
 
+  Future<LocalStore> gatedStore() async {
+    SharedPreferences.setMockInitialValues({});
+    final local = testStore(await SharedPreferences.getInstance());
+    await local.enableSourceGate('666666');
+    return local;
+  }
+
+  Future<void> settle(WidgetTester tester, [int frames = 20]) async {
+    for (var index = 0; index < frames; index++) {
+      await tester.pump(const Duration(milliseconds: 50));
+    }
+  }
+
   for (final size in [const Size(390, 844), const Size(1280, 800)]) {
     testWidgets('catalog, VIP filter and fresh details at $size', (
       tester,
@@ -23,33 +40,52 @@ void main() {
       addTearDown(tester.view.resetPhysicalSize);
       addTearDown(tester.view.resetDevicePixelRatio);
       final repository = FixtureRepository();
-      final local = await store();
+      final local = await (allSourcesEnabled ? gatedStore() : store());
       await tester.pumpWidget(DuanjuApp(repository: repository, store: local));
-      await tester.pumpAndSettle();
+      await settle(tester);
       expect(find.byTooltip('VIP：隐藏'), findsNothing);
       expect(find.text('测试短剧'), findsOneWidget);
       if (allSourcesEnabled) {
         await tester.tap(find.byKey(const ValueKey('source-switch')));
-        await tester.pumpAndSettle();
-        await tester.tap(find.text('黄豆'));
-        await tester.pumpAndSettle();
+        await settle(tester);
+        await tester.tap(
+          find.descendant(
+            of: find.byType(PopupMenuItem<SourceGroup>),
+            matching: find.text('黄豆'),
+          ),
+        );
+        await settle(tester);
         expect(find.text('会员测试剧'), findsNothing);
         expect(find.byTooltip('VIP：隐藏'), findsOneWidget);
         await tester.tap(find.byTooltip('VIP：隐藏'));
-        await tester.pumpAndSettle();
+        await settle(tester);
         expect(find.byTooltip('VIP：显示'), findsOneWidget);
         expect(find.text('会员测试剧'), findsOneWidget);
         await tester.tap(find.byTooltip('VIP：显示'));
-        await tester.pumpAndSettle();
+        await settle(tester);
       } else {
         expect(find.text('黄豆'), findsNothing);
       }
       expect(find.text('会员测试剧'), findsNothing);
-      await tester.tap(find.text('测试短剧'));
+      await tester.pumpWidget(
+        MaterialApp(
+          home: DetailScreen(
+            drama: FixtureRepository.free,
+            repository: repository,
+            store: local,
+          ),
+        ),
+      );
       await tester.pumpAndSettle();
       expect(repository.detailCalls, 1);
+      if (find.text('展开').evaluate().isNotEmpty) {
+        await tester.tap(find.text('展开'));
+        await tester.pumpAndSettle();
+      }
       expect(find.byKey(const ValueKey('episode-2')), findsOneWidget);
-      await tester.tap(find.byTooltip('加入追剧'));
+      await tester.tap(find.byKey(const ValueKey('follow-status')));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text(FollowStatus.watching.label));
       await tester.pumpAndSettle();
       expect(local.isFavorite(FixtureRepository.free.id), isTrue);
       for (final episode in [1, 2]) {
@@ -63,15 +99,15 @@ void main() {
           ),
         );
         await tester.pumpAndSettle();
-        expect(find.text('继续第 $episode 集'), findsOneWidget);
+        expect(find.text('继续播放 · 第 $episode 集'), findsOneWidget);
         for (final number in [1, 2]) {
-          final button = tester.widget<OutlinedButton>(
-            find.byKey(ValueKey('episode-$number')),
+          final button = tester.widget<RemoteTarget>(
+            find.descendant(
+              of: find.byKey(ValueKey('episode-$number')),
+              matching: find.byType(RemoteTarget),
+            ),
           );
-          expect(
-            button.style?.backgroundColor?.resolve({}),
-            number == episode ? isNotNull : isNull,
-          );
+          expect(button.selected, number == episode);
         }
       }
       await local.clearHistory();
@@ -148,6 +184,33 @@ void main() {
     expect(find.text('合成网络错误'), findsNothing);
     expect(find.text('暂时无法加载'), findsNothing);
     expect(repository.requests, ['hongguo']);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('launch page replaces itself with the resolved player', (
+    tester,
+  ) async {
+    final repository = FixtureRepository();
+    final local = await store();
+    await tester.pumpWidget(
+      MaterialApp(
+        home: PlaybackLaunchScreen(
+          drama: FixtureRepository.free,
+          repository: repository,
+          store: local,
+          playerBuilder: (detail, index, position) {
+            expect(detail.episodes, hasLength(2));
+            expect(index, 0);
+            expect(position, 0);
+            return const Scaffold(body: Text('launch player'));
+          },
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+    expect(find.text('launch player'), findsOneWidget);
+    expect(find.text('正在进入播放'), findsNothing);
+    expect(find.byType(PlaybackLaunchScreen), findsNothing);
     expect(tester.takeException(), isNull);
   });
 

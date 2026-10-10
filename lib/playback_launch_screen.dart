@@ -41,11 +41,15 @@ class PlaybackLaunchScreen extends StatefulWidget {
     required this.drama,
     required this.repository,
     required this.store,
+    this.playerBuilder,
   });
 
   final Drama drama;
   final AppRepository repository;
   final LocalStore store;
+  @visibleForTesting
+  final Widget Function(DramaDetail detail, int index, double position)?
+  playerBuilder;
 
   @override
   State<PlaybackLaunchScreen> createState() => _PlaybackLaunchScreenState();
@@ -73,6 +77,7 @@ class _PlaybackLaunchScreenState extends State<PlaybackLaunchScreen> {
     final generation = ++_generation;
     setState(() => _error = null);
     try {
+      _requirePlaybackAccess();
       final detail = await widget.repository.detail(widget.drama);
       if (!mounted ||
           generation != _generation ||
@@ -82,6 +87,7 @@ class _PlaybackLaunchScreenState extends State<PlaybackLaunchScreen> {
       final drama = widget.repository.catalogUpdates
           .current(widget.drama)
           .merge(detail.drama);
+      _requirePlaybackAccess();
       final merged = DramaDetail(
         drama,
         detail.episodes,
@@ -98,6 +104,7 @@ class _PlaybackLaunchScreenState extends State<PlaybackLaunchScreen> {
         setState(() => _error = '暂时没有可播放的集数');
         return;
       }
+      _requirePlaybackAccess();
       final watched = widget.store.watched(drama.id);
       final index = resumeEpisodeIndex(merged.episodes, watched);
       final episode = merged.episodes[index];
@@ -137,15 +144,18 @@ class _PlaybackLaunchScreenState extends State<PlaybackLaunchScreen> {
           _profileEpoch != widget.store.profileEpoch) {
         return;
       }
+      _requirePlaybackAccess();
       Navigator.of(context).pushReplacement(
         MaterialPageRoute<void>(
-          builder: (_) => PlayerScreen(
-            detail: merged,
-            initialIndex: index,
-            initialPosition: position,
-            repository: widget.repository,
-            store: widget.store,
-          ),
+          builder: (_) =>
+              widget.playerBuilder?.call(merged, index, position) ??
+              PlayerScreen(
+                detail: merged,
+                initialIndex: index,
+                initialPosition: position,
+                repository: widget.repository,
+                store: widget.store,
+              ),
         ),
       );
     } catch (error) {
@@ -155,6 +165,13 @@ class _PlaybackLaunchScreenState extends State<PlaybackLaunchScreen> {
         widget.repository.catalogUpdates.current(widget.drama),
         retryCover: true,
       );
+    }
+  }
+
+  void _requirePlaybackAccess() {
+    if (widget.store.locked ||
+        !widget.store.allowsSource(widget.drama.source)) {
+      throw AppFailure('当前用户或站源播放权限已变更，请重新打开影片');
     }
   }
 

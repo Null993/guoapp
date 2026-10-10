@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -41,6 +42,14 @@ func sourceFixtureEngine(t *testing.T, transport sourceFixtureTransport) *native
 	engine.downloader.client.Transport = transport
 	engine.downloader.limiter = newRequestLimiter(3, 0)
 	engine.downloader.cfg.Retries = 1
+	engine.sourceRetryPolicy = sourceFixtureRetryPolicy()
+	return engine
+}
+
+func sourceFixtureEngineSinglePage(t *testing.T, transport sourceFixtureTransport) *nativeEngine {
+	t.Helper()
+	engine := sourceFixtureEngine(t, transport)
+	engine.downloader.cfg.MaxPagesPerSort = 1
 	return engine
 }
 
@@ -246,5 +255,23 @@ func TestSourceBackoffUsesRelativeTimeAndRetainsTypedError(t *testing.T) {
 	var restored *requestBackoff
 	if !errors.As(publicError(fmt.Errorf("playlist: %w", backoff)), &restored) {
 		t.Fatal("redaction discarded structured retry time")
+	}
+}
+
+func sourceFixtureRetryPolicy() *nativeSourceRetryPolicy {
+	var mu sync.Mutex
+	current := time.Now()
+	return &nativeSourceRetryPolicy{
+		limit: time.Hour,
+		now:   func() time.Time { mu.Lock(); defer mu.Unlock(); return current },
+		wait: func(ctx context.Context, until time.Time) error {
+			if err := ctx.Err(); err != nil {
+				return err
+			}
+			mu.Lock()
+			current = current.Add(max(time.Second, until.Sub(current)))
+			mu.Unlock()
+			return nil
+		},
 	}
 }

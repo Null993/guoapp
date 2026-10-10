@@ -209,6 +209,7 @@ class NativeRepository extends AppRepository {
   LocalStore? _access;
   int _accessEpoch = -1;
   bool _accessWasLocked = false;
+  Future<void> _sessionReset = Future<void>.value();
   LocalStore? get access => _access;
   set access(LocalStore? value) {
     _access?.removeListener(_accessChanged);
@@ -227,7 +228,7 @@ class NativeRepository extends AppRepository {
     }
     _accessEpoch = current.profileEpoch;
     _accessWasLocked = current.locked;
-    unawaited(_clearSessions());
+    _sessionReset = _sessionReset.then((_) => _clearSessions());
   }
 
   Future<void> _clearSessions() async {
@@ -591,6 +592,13 @@ class NativeRepository extends AppRepository {
   Future<Map<String, dynamic>> _call(Map<String, dynamic> input) async {
     try {
       final action = input['action'] as String;
+      if (action != 'clearAllSourceAccess') {
+        Future<void> pending;
+        do {
+          pending = _sessionReset;
+          await pending;
+        } while (!identical(pending, _sessionReset));
+      }
       final unrestricted =
           {
             'initialize',

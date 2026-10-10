@@ -237,10 +237,11 @@ func TestSourceContinuousUpdateKeepsTailServerErrorAsFailure(t *testing.T) {
 	nativeSourceRetryAttemptLimit = 1
 	defer func() { nativeSourceRetryAttemptLimit = previous }()
 	engine := sourceFixtureEngine(t, yeguoPagingTransport(http.StatusInternalServerError))
+	engine.sourceRetryPolicy.limit = time.Minute
 	runYeguoUpdateTask(t, engine)
 
 	status := engine.sourceStatus(sourceYeguo)
-	if status.Running || status.Error == "" || strings.Contains(status.Stage, "目录已加载完") {
+	if status.Running || status.Stage != "连续失败已暂停" || !status.Resumable || !strings.Contains(status.Error, "HTTP 500") {
 		t.Fatalf("5xx 不应被当作目录结束：stage=%q error=%q", status.Stage, status.Error)
 	}
 	if !engine.nativeCached(sourceYeguo).HasMore {

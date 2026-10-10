@@ -255,11 +255,24 @@ func TestSourceMetadataKeepsReal404Skipped(t *testing.T) {
 	record := engine.sourceRecords[sourceHuangguoVideo]
 	checked, retryAt := record.MetadataChecked[items[0].ID], record.MetadataRetryAt[items[0].ID]
 	engine.mu.Unlock()
-	if checked.IsZero() {
-		t.Fatal("真实 404 应把该剧标记为已检查")
+	if checked.IsZero() || time.Since(checked) > time.Minute {
+		t.Fatalf("真实 404 应把该剧标记为刚检查过：%s", checked)
 	}
-	if until := time.Until(retryAt); until < 23*time.Hour {
-		t.Fatalf("真实 404 的重试间隔应为 24 小时，实际 %s", until)
+	if !retryAt.IsZero() {
+		t.Fatalf("已检查的剧集不应再排入短周期重试队列：%s", retryAt)
+	}
+	ready, remaining, nextRetry := engine.sourceMetadataWork(sourceHuangguoVideo)
+	if ready != 0 || remaining != 0 || !nextRetry.IsZero() {
+		t.Fatalf("真实 404 应在 24 小时内被跳过：ready=%d remaining=%d next=%s", ready, remaining, nextRetry)
+	}
+	engine.mu.Lock()
+	record = engine.sourceRecords[sourceHuangguoVideo]
+	record.MetadataChecked[items[0].ID] = time.Now().Add(-24*time.Hour - time.Minute)
+	engine.sourceRecords[sourceHuangguoVideo] = record
+	engine.mu.Unlock()
+	ready, remaining, nextRetry = engine.sourceMetadataWork(sourceHuangguoVideo)
+	if ready != 1 || remaining != 1 || !nextRetry.IsZero() {
+		t.Fatalf("24 小时窗口过后应重新变为待补：ready=%d remaining=%d next=%s", ready, remaining, nextRetry)
 	}
 }
 

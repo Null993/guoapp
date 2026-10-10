@@ -504,6 +504,12 @@ class _HomeScreenState extends State<HomeScreen> {
     unawaited(saveUserChange(context, () => widget.store.refreshDrama(drama)));
   }
 
+  void _showLoadFailure(String message) {
+    ScaffoldMessenger.of(
+      context,
+    ).showSnackBar(SnackBar(content: Text(message)));
+  }
+
   Future<void> _load({
     bool more = false,
     bool useCache = false,
@@ -526,6 +532,7 @@ class _HomeScreenState extends State<HomeScreen> {
         if (query != _submittedQuery) _items = [];
       }
     });
+    var cachedShown = false;
     void accept(
       CatalogPage result, {
       bool cached = false,
@@ -533,6 +540,7 @@ class _HomeScreenState extends State<HomeScreen> {
     }) {
       if (!mounted || generation != _generation) return;
       final pending = partial || (cached && !result.fresh);
+      if (cached) cachedShown = true;
       setState(() {
         _items = result.items;
         if (!partial) {
@@ -543,6 +551,12 @@ class _HomeScreenState extends State<HomeScreen> {
         _loadingMore = more && pending;
         _error = result.warning.isEmpty ? null : result.warning;
       });
+      if (!partial &&
+          !cachedShown &&
+          result.warning.isNotEmpty &&
+          result.items.isNotEmpty) {
+        _showLoadFailure(result.warning);
+      }
       if (partial) return;
       unawaited(
         saveUserChange(context, () => widget.store.refreshDramas(result.items)),
@@ -564,11 +578,16 @@ class _HomeScreenState extends State<HomeScreen> {
       accept(result);
     } catch (error) {
       if (!mounted || generation != _generation) return;
+      final message = error.toString();
+      final visible = _items.isNotEmpty && !cachedShown;
       setState(() {
         _loading = false;
         _loadingMore = false;
-        _error = error.toString();
+        _error = message;
       });
+      if (visible) {
+        _showLoadFailure(message);
+      }
     }
   }
 

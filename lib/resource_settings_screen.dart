@@ -179,6 +179,7 @@ class _ResourceSettingsScreenState extends State<ResourceSettingsScreen> {
 
   Widget _count(String title, int value, ValueChanged<int> change) =>
       DropdownButtonFormField<int>(
+        key: ValueKey('$title:$value'),
         initialValue: value,
         decoration: InputDecoration(labelText: title),
         items: [
@@ -270,6 +271,20 @@ class _ResourceSettingsScreenState extends State<ResourceSettingsScreen> {
                     ),
                   const SizedBox(height: 28),
                   _count('目录请求并发', _catalog, (value) => _catalog = value),
+                  const SizedBox(height: 8),
+                  Align(
+                    alignment: Alignment.centerLeft,
+                    child: TextButton(
+                      onPressed: _busy
+                          ? null
+                          : () => setState(() {
+                              _catalog = 6;
+                              _interval = 100;
+                            }),
+                      child: const Text('加快资料补齐：并发 6 / 间隔 100 毫秒'),
+                    ),
+                  ),
+                  const Text('点击后需保存。若频繁限流，可增大请求间隔或降低并发。'),
                   const SizedBox(height: 16),
                   Text('目录请求间隔 · $_interval 毫秒'),
                   Slider(

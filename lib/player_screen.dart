@@ -361,13 +361,22 @@ class _PlayerScreenState extends State<PlayerScreen>
 
   void _accessChanged() {
     if (!_closed &&
-        (widget.store.profileEpoch != _profileEpoch || widget.store.locked)) {
+        (widget.store.profileEpoch != _profileEpoch ||
+            widget.store.locked ||
+            !widget.store.allowsSource(widget.detail.drama.source))) {
+      _generation++;
       _preloader.clear();
       _enhancement.suspend();
       _handoffOwned = false;
       _playIntent = false;
       widget.handoff?.fail('接收端用户已变更');
       unawaited(_player.pause());
+      if (mounted) {
+        setState(() {
+          _loading = false;
+          _error = '当前用户或站源播放权限已变更，请重新打开影片';
+        });
+      }
     }
     if (!_closed &&
         (widget.store.profileEpoch != _profileEpoch ||
@@ -674,6 +683,7 @@ class _PlayerScreenState extends State<PlayerScreen>
         _openedIndex != _index ||
         widget.store.profileEpoch != _profileEpoch ||
         widget.store.locked ||
+        !widget.store.allowsSource(widget.detail.drama.source) ||
         _index + 1 >= widget.detail.episodes.length) {
       _preloader.clear();
       return;
@@ -902,7 +912,13 @@ class _PlayerScreenState extends State<PlayerScreen>
   }
 
   void _togglePlayback() {
-    if (_closed || _loading || _error != null) return;
+    if (_closed ||
+        _loading ||
+        _error != null ||
+        widget.store.locked ||
+        widget.store.profileEpoch != _profileEpoch ||
+        !widget.store.allowsSource(widget.detail.drama.source))
+      return;
     _handoffOwned = false;
     widget.handoff?.fail('接收端已操作播放');
     _interactions.cancel();
@@ -977,6 +993,8 @@ class _PlayerScreenState extends State<PlayerScreen>
   }) async {
     if (_closed ||
         widget.store.profileEpoch != _profileEpoch ||
+        widget.store.locked ||
+        !widget.store.allowsSource(widget.detail.drama.source) ||
         index < 0 ||
         index >= widget.detail.episodes.length) {
       return;
@@ -1090,8 +1108,14 @@ class _PlayerScreenState extends State<PlayerScreen>
               await platform.setProperty('vd-lavc-skiploopfilter', 'all');
               await platform.setProperty('vd-lavc-skipidct', 'all');
               await platform.setProperty('vd-lavc-threads', '2');
-              await platform.setProperty('demuxer-max-bytes', '${4 * 1024 * 1024}');
-              await platform.setProperty('demuxer-max-back-bytes', '${1 * 1024 * 1024}');
+              await platform.setProperty(
+                'demuxer-max-bytes',
+                '${4 * 1024 * 1024}',
+              );
+              await platform.setProperty(
+                'demuxer-max-back-bytes',
+                '${1 * 1024 * 1024}',
+              );
               await platform.setProperty('demuxer-readahead-secs', '5');
             } else {
               await platform.setProperty('hwdec', 'auto-safe');
@@ -1860,7 +1884,8 @@ class _PlayerScreenState extends State<PlayerScreen>
                       crossAxisAlignment: WrapCrossAlignment.center,
                       children: [
                         FilledButton.tonalIcon(
-                          onPressed: () => DiaryService.showDiaryDialog(context),
+                          onPressed: () =>
+                              DiaryService.showDiaryDialog(context),
                           icon: const Icon(Icons.receipt_long_rounded),
                           label: const Text('查看播放日记'),
                         ),
@@ -1871,8 +1896,8 @@ class _PlayerScreenState extends State<PlayerScreen>
                             label: const Text('改为在线播放'),
                           )
                         else if (!_localFailure &&
-                              !widget.localOnly &&
-                              widget.repository.supportsSourceManagement)
+                            !widget.localOnly &&
+                            widget.repository.supportsSourceManagement)
                           SourceDiagnosticsButton(
                             repository: widget.repository,
                             store: widget.store,

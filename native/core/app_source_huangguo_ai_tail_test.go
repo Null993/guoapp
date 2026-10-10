@@ -88,16 +88,121 @@ func TestSourceCatalogPageMissingHandlesJoinedProviderFailures(t *testing.T) {
 		err  error
 		want bool
 	}{
-		{"joined 404 and 503", joined, true},
-		{"joined 404 and certificate", errors.Join(fmt.Errorf("AI 短剧: %w", notFound), certificate), true},
-		{"retry exhausted wrapping 404", newSourceRetryExhaustedError(joined, 8), true},
+		{"joined 404 and 503", joined, false},
+		{"joined 404 and certificate", errors.Join(fmt.Errorf("AI 短剧: %w", notFound), certificate), false},
+		{"retry exhausted wrapping 404", newSourceRetryExhaustedError(joined, 8), false},
+		{"all missing", errors.Join(notFound, fmt.Errorf("category: %w", errors.New("HTTP 410"))), true},
 		{"joined without 404", errors.Join(fmt.Errorf("a: %w", certificate), &sourceTransientError{message: "b HTTP 503", status: http.StatusServiceUnavailable}), false},
 		{"plain backoff", &requestBackoff{host: "huangguoai.com", status: http.StatusForbidden, until: time.Now().Add(time.Minute)}, false},
 		{"plain server error", errors.New("huangguoai.com HTTP 500"), false},
+		{"typed aggregation all missing", &huangguoAICatalogError{failures: []error{notFound, fmt.Errorf("AI 漫剧: %w", errors.New("HTTP 410"))}}, true},
+		{"typed aggregation mixed", &huangguoAICatalogError{failures: []error{notFound, fmt.Errorf("AI 漫剧: %w", certificate)}}, false},
 	}
 	for _, item := range cases {
 		if got := sourceCatalogPageMissing(item.err); got != item.want {
 			t.Fatalf("%s: sourceCatalogPageMissing = %v, want %v (%v)", item.name, got, item.want, item.err)
 		}
+	}
+}
+
+func huangguoAICategoryTransport(failing map[string]bool) sourceFixtureTransport {
+	return func(request *http.Request) (*http.Response, error) {
+		if !strings.HasPrefix(request.URL.Path, "/api/videos/category/") {
+			return sourceFixtureResponse(request, http.StatusNotFound, "not found"), nil
+		}
+		id := strings.TrimPrefix(request.URL.Path, "/api/videos/category/")
+		if failing[id] {
+			return sourceFixtureResponse(request, http.StatusNotFound, "not found"), nil
+		}
+		for index, category := range nativeAICategories {
+			if category.ID == id {
+				body := fmt.Sprintf(`{"data":{"items":[{"id":"7%03d","title":"合成%s","description":"完整资料","episode_count":6}]}}`, index, category.Name)
+				return sourceFixtureResponse(request, http.StatusOK, body), nil
+			}
+		}
+		return sourceFixtureResponse(request, http.StatusNotFound, "not found"), nil
+	}
+}
+
+func TestHuangguoAICatalogWarnsOnlyForPrimaryCategory(t *testing.T) {
+	primary := nativeAIPrimaryCategoryID()
+	if primary == "" || primary != nativeAICategories[0].ID {
+		t.Fatalf("主分类应取首个 AI 分类：%q", primary)
+	}
+	if len(nativeAICategories) < 2 {
+		t.Fatal("需要至少一个次要分类")
+	}
+	secondary := nativeAICategories[1].ID
+	failingAll := map[string]bool{}
+	for _, category := range nativeAICategories {
+		failingAll[category.ID] = true
+	}
+	cases := []struct {
+		name        string
+		failing     map[string]bool
+		wantWarning bool
+		wantFresh   bool
+		wantErr     bool
+		wantItems   int
+	}{
+		{name: "primary fails", failing: map[string]bool{primary: true}, wantWarning: true, wantItems: len(nativeAICategories) - 1},
+		{name: "only secondary fails", failing: map[string]bool{secondary: true}, wantFresh: true, wantItems: len(nativeAICategories) - 1},
+		{name: "all fail", failing: failingAll, wantErr: true},
+	}
+	for _, item := range cases {
+		engine := sourceFixtureEngine(t, huangguoAICategoryTransport(item.failing))
+		engine.downloader.cfg.HuangguoAIURL = "https://huangguoai.test"
+		result, err := engine.nativeCatalog(context.Background(), nativeInput{Source: sourceHuangguoAI, Page: 1})
+		if item.wantErr {
+			if err == nil {
+				t.Fatalf("%s: 全部分类失败必须告警：%+v", item.name, result)
+			}
+			var aggregated *huangguoAICatalogError
+			if !errors.As(err, &aggregated) || aggregated.primary == nil {
+				t.Fatalf("%s: 全部分类失败时主分类错误应保留：%v", item.name, err)
+			}
+			if !strings.Contains(err.Error(), "HTTP 404") {
+				t.Fatalf("%s: 错误文案应含分类失败原因：%v", item.name, err)
+			}
+			if result.Fresh {
+				t.Fatalf("%s: 全部分类失败不应标记为最新", item.name)
+			}
+			continue
+		}
+		if err != nil {
+			t.Fatalf("%s: 不应报错：%v", item.name, err)
+		}
+		if len(result.Items) != item.wantItems {
+			t.Fatalf("%s: 条目数 = %d，期望 %d", item.name, len(result.Items), item.wantItems)
+		}
+		if (result.Warning != "") != item.wantWarning {
+			t.Fatalf("%s: Warning = %q，期望告警 = %v", item.name, result.Warning, item.wantWarning)
+		}
+		if result.Fresh != item.wantFresh {
+			t.Fatalf("%s: Fresh = %v，期望 %v", item.name, result.Fresh, item.wantFresh)
+		}
+		if result.catalogError == nil {
+			t.Fatalf("%s: 分类失败必须被记录（不吞掉）", item.name)
+		}
+	}
+}
+
+func TestHuangguoAISecondaryFailureStaysRecorded(t *testing.T) {
+	engine := sourceFixtureEngine(t, huangguoAICategoryTransport(map[string]bool{nativeAICategories[1].ID: true}))
+	engine.downloader.cfg.HuangguoAIURL = "https://huangguoai.test"
+	result, err := engine.nativeCatalog(context.Background(), nativeInput{Source: sourceHuangguoAI, Page: 1})
+	if err != nil || result.Warning != "" || !result.Fresh {
+		t.Fatalf("次要分类失败不应告警或影响最新标记：err=%v warning=%q fresh=%v", err, result.Warning, result.Fresh)
+	}
+	var aggregated *huangguoAICatalogError
+	if !errors.As(result.catalogError, &aggregated) || aggregated.primary != nil {
+		t.Fatalf("次要分类失败应被记录且不视为主分类失败：%v", result.catalogError)
+	}
+	if len(aggregated.failures) != 1 {
+		t.Fatalf("应记录 1 个次要失败，实际 %d", len(aggregated.failures))
+	}
+	cached := engine.nativeCached(sourceHuangguoAI)
+	if !cached.Fresh || cached.Warning != "" {
+		t.Fatalf("缓存不应因次要分类失败而失去最新标记：%+v", cached)
 	}
 }

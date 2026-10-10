@@ -351,6 +351,7 @@ void main() {
       await tester.tap(find.byKey(ValueKey(first.id)));
       await tester.tap(find.byKey(ValueKey(first.id)));
       await tester.pump();
+      await tester.pump();
       expect(find.byType(PlaybackLaunchScreen), findsOneWidget);
       expect(find.text('正在进入播放'), findsOneWidget);
       expect(repository.detailRequests, [first.id]);

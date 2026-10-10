@@ -17,9 +17,9 @@ func TestSourceRetryStepStopsAtAttemptLimit(t *testing.T) {
 	defer func() { nativeSourceRetryAttemptLimit = previous }()
 	engine := sourceFixtureEngine(t, nil)
 	attempts := 0
-	err := engine.retrySourceStep(context.Background(), sourceYeguo, func() error {
+	err := engine.retrySourceStep(context.Background(), sourceYeguo, func(context.Context) error {
 		attempts++
-		return &requestBackoff{host: "analyze.buxefaex.cc", status: http.StatusServiceUnavailable, until: time.Now().Add(-time.Second)}
+		return &net.OpError{Op: "read", Net: "tcp", Err: errors.New("connection reset by peer")}
 	})
 	if attempts != 2 {
 		t.Fatalf("retry loop stopped after %d attempts, want 2", attempts)
@@ -27,7 +27,7 @@ func TestSourceRetryStepStopsAtAttemptLimit(t *testing.T) {
 	if err == nil {
 		t.Fatal("retry loop returned no error after reaching the attempt limit")
 	}
-	if !strings.Contains(err.Error(), "多次重试仍未成功") || !strings.Contains(err.Error(), "analyze.buxefaex.cc HTTP 503") {
+	if !strings.Contains(err.Error(), "多次重试仍未成功") || !strings.Contains(err.Error(), "connection reset by peer") {
 		t.Fatalf("exhausted retry lost the real cause: %v", err)
 	}
 	var exhausted *nativeSourceRetryExhaustedError
@@ -40,28 +40,34 @@ func TestSourceRetryStepStopsAtAttemptLimit(t *testing.T) {
 	}
 }
 
-func TestSourceRetryKeepsAutomaticRetryBeforeLimit(t *testing.T) {
-	err := fmt.Errorf("获取剧集资料失败: %w", context.DeadlineExceeded)
-	if _, temporary := sourceRetryWait(err, nativeSourceRetryAttemptLimit-1); !temporary {
-		t.Fatal("recoverable failure stopped retrying before the attempt limit")
+func TestSourceRetryKeepsAutomaticRetryPastLimit(t *testing.T) {
+	engine := &nativeEngine{}
+	failures := []error{
+		fmt.Errorf("获取剧集资料失败: %w", context.DeadlineExceeded),
+		&requestBackoff{status: http.StatusTooManyRequests, until: time.Now()},
+		&sourceTransientError{status: http.StatusRequestTimeout},
+		&sourceTransientError{status: http.StatusServiceUnavailable},
 	}
-	if _, temporary := sourceRetryWait(err, nativeSourceRetryAttemptLimit); temporary {
-		t.Fatal("recoverable failure kept retrying past the attempt limit")
-	}
-	if !sourceRetryExhausted(err, nativeSourceRetryAttemptLimit) || sourceRetryExhausted(err, nativeSourceRetryAttemptLimit-1) {
-		t.Fatal("attempt limit boundary is inconsistent")
+	for _, err := range failures {
+		if _, temporary := engine.sourceRetryWait(err, nativeSourceRetryAttemptLimit+3); !temporary {
+			t.Fatalf("recoverable failure stopped automatic retry: %v", err)
+		}
+		if engine.sourceRetryExhausted(err, nativeSourceRetryAttemptLimit+3) {
+			t.Fatalf("recoverable failure was reported as exhausted: %v", err)
+		}
 	}
 }
 
 func TestSourceRetryNeverRepeatsTerminalFailures(t *testing.T) {
+	engine := &nativeEngine{}
 	verify := &requestBackoff{host: "huangguo.video", status: http.StatusForbidden, until: time.Now().Add(time.Minute), verify: true}
 	denied := &requestBackoff{host: "huangguo.video", status: http.StatusForbidden, until: time.Now().Add(time.Minute)}
 	missingHost := &net.DNSError{Err: "no such host", Name: "www.sorani.net", IsNotFound: true}
 	for _, err := range []error{verify, denied, missingHost, context.Canceled} {
-		if _, temporary := sourceRetryWait(err, 1); temporary {
+		if _, temporary := engine.sourceRetryWait(err, 1); temporary {
 			t.Fatalf("terminal failure was retried: %v", err)
 		}
-		if sourceRetryExhausted(err, nativeSourceRetryAttemptLimit) {
+		if engine.sourceRetryExhausted(err, nativeSourceRetryAttemptLimit) {
 			t.Fatalf("terminal failure was reported as exhausted retries: %v", err)
 		}
 	}
@@ -72,7 +78,7 @@ func TestSourceTaskStopsAfterBoundedRetries(t *testing.T) {
 	nativeSourceRetryAttemptLimit = 2
 	defer func() { nativeSourceRetryAttemptLimit = previous }()
 	engine := sourceFixtureEngine(t, func(request *http.Request) (*http.Response, error) {
-		return nil, context.DeadlineExceeded
+		return nil, &net.OpError{Op: "read", Net: "tcp", Err: errors.New("connection reset by peer")}
 	})
 	if _, err := engine.startSourceTask(sourceHongguo, "update", nativeDrama{}); err != nil {
 		t.Fatal(err)
@@ -89,7 +95,7 @@ func TestSourceTaskStopsAfterBoundedRetries(t *testing.T) {
 	if status.Stage != "多次重试仍未成功" {
 		t.Fatalf("bounded retry stage = %q, error = %q", status.Stage, status.Error)
 	}
-	if !strings.Contains(status.Error, "context deadline exceeded") || !strings.Contains(status.Error, "已重试 2 次") {
+	if !strings.Contains(status.Error, "connection reset by peer") || !strings.Contains(status.Error, "已重试 2 次") {
 		t.Fatalf("bounded retry lost the real cause: %q", status.Error)
 	}
 	if !status.RetryAt.IsZero() {
@@ -175,5 +181,93 @@ func TestSourceRunProgressIsMonotonic(t *testing.T) {
 	}
 	if got := sourceRunProgress(8, 4, 6); got != 6 {
 		t.Fatalf("progress regressed to %d", got)
+	}
+}
+
+func TestSourceRetryWindowResetsAfterSuccess(t *testing.T) {
+	engine := sourceFixtureEngine(t, nil)
+	window := engine.newSourceRetryWindow()
+	window.failed(context.DeadlineExceeded)
+	start := window.started
+	if err := window.wait(context.Background(), start.Add(59*time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	window.reset()
+	window.failed(context.DeadlineExceeded)
+	if err := window.wait(context.Background(), window.started.Add(59*time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	err := window.wait(context.Background(), window.started.Add(time.Hour))
+	var exhausted *nativeSourceRetryWindowError
+	if !errors.As(err, &exhausted) || !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("missing retry window cause: %v", err)
+	}
+}
+
+func TestSourceRetryWindowCanBeStopped(t *testing.T) {
+	engine := sourceFixtureEngine(t, nil)
+	window := engine.newSourceRetryWindow()
+	window.failed(context.DeadlineExceeded)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if err := window.wait(ctx, time.Now().Add(time.Hour)); !errors.Is(err, context.Canceled) {
+		t.Fatalf("cancel lost: %v", err)
+	}
+}
+
+func TestSourceRetryWindowBoundsInFlightContext(t *testing.T) {
+	engine := &nativeEngine{sourceRetryPolicy: &nativeSourceRetryPolicy{limit: 20 * time.Millisecond}}
+	window := engine.newSourceRetryWindow()
+	window.failed(context.DeadlineExceeded)
+	work, cancel, err := window.requestContext(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cancel()
+	select {
+	case <-work.Done():
+		if !errors.Is(work.Err(), context.DeadlineExceeded) {
+			t.Fatalf("unexpected request cancellation: %v", work.Err())
+		}
+	case <-time.After(time.Second):
+		t.Fatal("in-flight request was not bounded by the retry window")
+	}
+}
+
+func TestSourceRetryUsesInjectedClock(t *testing.T) {
+	policy := sourceFixtureRetryPolicy()
+	engine := &nativeEngine{sourceRetryPolicy: policy}
+	retry, temporary := engine.sourceRetryWait(&sourceTransientError{status: http.StatusServiceUnavailable}, 1)
+	if !temporary {
+		t.Fatal("可恢复失败应可重试")
+	}
+	if want := policy.now().Add(3 * time.Second); !retry.Equal(want) {
+		t.Fatalf("退避时间未使用注入时钟：retry=%s want=%s", retry, want)
+	}
+	if _, temporary := engine.sourceRetryWait(&sourceTransientError{status: http.StatusNotFound}, nativeSourceRetryAttemptLimit); temporary {
+		t.Fatal("达到次数上限的有界故障不应继续自动重试")
+	}
+}
+
+func TestSourceMetadataSuccessResetsRetryWindow(t *testing.T) {
+	previousBuild := buildAllSources
+	buildAllSources = "true"
+	defer func() { buildAllSources = previousBuild }()
+
+	engine := sourceFixtureEngine(t, metadataDetailTransport(func(request *http.Request) (*http.Response, error) {
+		return sourceFixtureResponse(request, http.StatusOK, `<h1>合成短剧</h1><meta name="description" content="完整资料"><div data-hls="https://media.example.test/master.m3u8"></div>`), nil
+	}))
+	engine.downloader.cfg.HuangguoVideoURL = "https://huangguo.video"
+	if _, err := engine.nativeCatalog(context.Background(), nativeInput{Source: sourceHuangguoVideo, Page: 1}); err != nil {
+		t.Fatal(err)
+	}
+	window := engine.newSourceRetryWindow()
+	window.failed(errors.New("synthetic failure"))
+	ctx := context.WithValue(context.Background(), sourceRetryWindowKey{}, window)
+	if err := engine.updateSource(ctx, sourceHuangguoVideo, "continuousMetadata"); err != nil {
+		t.Fatal(err)
+	}
+	if !window.started.IsZero() || window.cause != nil {
+		t.Fatalf("资料请求成功后应重置连续失败窗口：started=%s cause=%v", window.started, window.cause)
 	}
 }

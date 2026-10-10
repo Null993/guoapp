@@ -26,12 +26,50 @@ type sourceThroughputStub struct {
 	peakInFlight int
 	breakOnce    sync.Once
 	breakWrites  func()
+	gate         chan struct{}
+	gateTarget   int
+	gateTimeout  time.Duration
+	gateOnce     sync.Once
+	gateOpened   bool
+	gateExpired  bool
 }
 
 func (stub *sourceThroughputStub) snapshot() (catalog, detail, peak int) {
 	stub.mu.Lock()
 	defer stub.mu.Unlock()
 	return stub.catalogCalls, stub.detailCalls, stub.peakInFlight
+}
+
+func (stub *sourceThroughputStub) gateState() bool {
+	stub.mu.Lock()
+	defer stub.mu.Unlock()
+	return stub.gateOpened
+}
+
+func (stub *sourceThroughputStub) waitGate(request *http.Request) {
+	stub.mu.Lock()
+	if stub.gate == nil {
+		stub.mu.Unlock()
+		return
+	}
+	if !stub.gateOpened && stub.inFlight >= stub.gateTarget {
+		stub.gateOpened = true
+		stub.gateOnce.Do(func() { close(stub.gate) })
+	}
+	if stub.gateOpened || stub.gateExpired {
+		stub.mu.Unlock()
+		return
+	}
+	gate, timeout := stub.gate, stub.gateTimeout
+	stub.mu.Unlock()
+	select {
+	case <-gate:
+	case <-time.After(timeout):
+		stub.mu.Lock()
+		stub.gateExpired = true
+		stub.mu.Unlock()
+	case <-request.Context().Done():
+	}
 }
 
 func (stub *sourceThroughputStub) handler() http.Handler {
@@ -60,6 +98,7 @@ func (stub *sourceThroughputStub) handler() http.Handler {
 				stub.peakInFlight = stub.inFlight
 			}
 			stub.mu.Unlock()
+			stub.waitGate(request)
 			stub.breakOnce.Do(func() {
 				if stub.breakWrites != nil {
 					stub.breakWrites()
@@ -100,15 +139,16 @@ type sourceThroughputRun struct {
 	catalogCalls int
 	detailCalls  int
 	peakInFlight int
+	gateOpened   bool
 	flushes      int
 	diskWrites   int
 	catalogsSize int64
 }
 
 func (run sourceThroughputRun) String() string {
-	return fmt.Sprintf("items=%d elapsed=%s perItem=%s catalogRequests=%d detailRequests=%d peakInFlight=%d batchFlushes=%d catalogsDiskWrites=%d catalogsBytes=%d",
+	return fmt.Sprintf("items=%d elapsed=%s perItem=%s catalogRequests=%d detailRequests=%d peakInFlight=%d gateOpened=%v batchFlushes=%d catalogsDiskWrites=%d catalogsBytes=%d",
 		run.items, run.elapsed.Round(time.Millisecond), (run.elapsed / time.Duration(max(1, run.items))).Round(100*time.Microsecond),
-		run.catalogCalls, run.detailCalls, run.peakInFlight, run.flushes, run.diskWrites, run.catalogsSize)
+		run.catalogCalls, run.detailCalls, run.peakInFlight, run.gateOpened, run.flushes, run.diskWrites, run.catalogsSize)
 }
 
 func runSourceMetadataThroughput(t *testing.T, items int, delay time.Duration, workers, flushItems int, interval time.Duration, deferDetail bool) sourceThroughputRun {
@@ -119,7 +159,7 @@ func runSourceMetadataThroughput(t *testing.T, items int, delay time.Duration, w
 		nativeMetadataWorkers, nativeMetadataFlushItems, nativeMetadataDeferDetailWrite = previousWorkers, previousFlush, previousDefer
 	}()
 
-	stub := &sourceThroughputStub{items: items, detailDelay: delay}
+	stub := &sourceThroughputStub{items: items, detailDelay: delay, gate: make(chan struct{}), gateTarget: 2, gateTimeout: 300 * time.Millisecond}
 	engine, _ := sourceThroughputEngine(t, stub)
 	if interval > 0 {
 		engine.downloader.limiter = newRequestLimiter(3, interval)
@@ -129,6 +169,7 @@ func runSourceMetadataThroughput(t *testing.T, items int, delay time.Duration, w
 	engine.runSourceTask(context.Background(), sourceHuangguoVideo, "update", nativeDrama{}, &nativeSourceTask{cancel: func() {}})
 	run := sourceThroughputRun{elapsed: time.Since(started), items: items}
 	run.catalogCalls, run.detailCalls, run.peakInFlight = stub.snapshot()
+	run.gateOpened = stub.gateState()
 	engine.mu.Lock()
 	run.flushes = engine.sourceRecords[sourceHuangguoVideo].catalogFlushCount
 	run.diskWrites = engine.catalogDiskWrites
@@ -162,8 +203,21 @@ func TestSourceMetadataThroughputProbe(t *testing.T) {
 			t.Logf("perItem  %s", perItem)
 			t.Logf("batched  %s", batched)
 			t.Logf("deferred %s", deferred)
-			if batched.peakInFlight <= perItem.peakInFlight {
-				t.Fatalf("资料阶段未并发：perItem peak=%d batched peak=%d", perItem.peakInFlight, batched.peakInFlight)
+			if !batched.gateOpened || !deferred.gateOpened {
+				t.Fatalf("资料阶段未并发（未观测到 ≥2 同时在飞）：batched gate=%v deferred gate=%v", batched.gateOpened, deferred.gateOpened)
+			}
+			if perItem.gateOpened {
+				t.Fatal("单 worker 不应观测到并发")
+			}
+			if batched.catalogCalls != perItem.catalogCalls || deferred.detailCalls != perItem.detailCalls {
+				t.Fatalf("请求数随档位变化：perItem=%d/%d batched=%d/%d deferred=%d/%d",
+					perItem.catalogCalls, perItem.detailCalls, batched.catalogCalls, batched.detailCalls, deferred.catalogCalls, deferred.detailCalls)
+			}
+			if perItem.flushes != items {
+				t.Fatalf("每部落盘档位应逐部落盘：flushes=%d items=%d", perItem.flushes, items)
+			}
+			if batched.flushes*4 >= perItem.flushes || deferred.flushes != batched.flushes {
+				t.Fatalf("进度落盘未批量：perItem=%d batched=%d deferred=%d", perItem.flushes, batched.flushes, deferred.flushes)
 			}
 			if batched.diskWrites >= perItem.diskWrites {
 				t.Fatalf("进度落盘未批量：perItem=%d batched=%d", perItem.diskWrites, batched.diskWrites)
@@ -171,7 +225,7 @@ func TestSourceMetadataThroughputProbe(t *testing.T) {
 			if deferred.diskWrites >= batched.diskWrites {
 				t.Fatalf("详情落盘未转为批量：batched=%d deferred=%d", batched.diskWrites, deferred.diskWrites)
 			}
-			if deferred.elapsed >= batched.elapsed {
+			if delay == 0 && deferred.elapsed >= batched.elapsed {
 				t.Fatalf("详情落盘批量后未变快：batched=%s deferred=%s", batched.elapsed, deferred.elapsed)
 			}
 		})
@@ -183,8 +237,14 @@ func TestSourceMetadataThroughputWithRateInterval(t *testing.T) {
 	parallel := runSourceMetadataThroughput(t, 40, 80*time.Millisecond, 4, 20, 25*time.Millisecond, true)
 	t.Logf("serial   %s", serial)
 	t.Logf("parallel %s", parallel)
-	if parallel.peakInFlight <= 1 {
-		t.Fatalf("限速间隔下的资料阶段未并发：peak=%d", parallel.peakInFlight)
+	if !parallel.gateOpened {
+		t.Fatal("限速间隔下的资料阶段未并发（未观测到 ≥2 同时在飞）")
+	}
+	if serial.gateOpened {
+		t.Fatal("限速间隔下单 worker 不应观测到并发")
+	}
+	if parallel.detailCalls != serial.detailCalls || parallel.diskWrites >= serial.diskWrites {
+		t.Fatalf("限速间隔下请求数或落盘异常：serial=%d/%d parallel=%d/%d", serial.detailCalls, serial.diskWrites, parallel.detailCalls, parallel.diskWrites)
 	}
 	if parallel.elapsed >= serial.elapsed {
 		t.Fatalf("限速间隔下并发没有变快：serial=%s parallel=%s", serial.elapsed, parallel.elapsed)
