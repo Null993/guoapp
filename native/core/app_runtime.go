@@ -223,6 +223,7 @@ type nativeEngine struct {
 	recommendations   map[string]nativeRecommendationState
 	catalogSaveError  error
 	sourceSaveError   error
+	sourceRetryPolicy *nativeSourceRetryPolicy
 	catalogDiskWrites int
 	covers            *nativeCoverCache
 	stream            *nativeStreamServer
@@ -313,7 +314,10 @@ func (d *Downloader) buildHTTPClient() {
 			if len(via) >= 10 {
 				return errors.New("站源重定向次数过多")
 			}
-			if len(via) > 0 && !strings.EqualFold(request.URL.Host, via[0].URL.Host) {
+			if len(via) > 0 && !sameRequestOrigin(via[0].URL.String(), request) {
+				if request.Method == http.MethodPost && providerSourceForURL(via[0].URL.String()) == sourceHuangdou {
+					return errors.New("黄豆授权请求不能跨域重定向")
+				}
 				request.Header.Del("X-Preview-Token")
 				request.Header.Del("Cookie")
 				request.Header.Del("Authorization")
@@ -795,6 +799,11 @@ func (engine *nativeEngine) nativeCatalog(ctx context.Context, input nativeInput
 		}
 	case sourceHuangguoAI:
 		items, result.HasMore, err = d.fetchHuangguoAICatalogPage(ctx, page, category)
+		var aggregated *huangguoAICatalogError
+		if err != nil && errors.As(err, &aggregated) && aggregated.primary == nil {
+			result.catalogError = err
+			err = nil
+		}
 	case sourceHuangju:
 		items, result.HasMore, err = d.fetchHuangjuCatalogPage(ctx, page, category, "")
 	case sourceYeguo:
@@ -902,6 +911,9 @@ func (engine *nativeEngine) nativeDetail(ctx context.Context, drama nativeDrama)
 		drama.Episodes = max(drama.Episodes, nativeNormalize(raw).Episodes)
 	}
 	warning := ""
+	if fetching, _ := ctx.Value(nativeMetadataFetchKey{}).(bool); fetching {
+		return map[string]any{"drama": drama, "chapters": chapters, "warning": warning}, nil
+	}
 	save := engine.saveDetailMetadata
 	if deferred, _ := ctx.Value(nativeDeferredDetailKey{}).(bool); deferred {
 		save = engine.saveDetailMetadataDeferred

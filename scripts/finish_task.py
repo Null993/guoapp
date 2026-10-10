@@ -1,5 +1,6 @@
 import argparse
 import datetime
+import re
 import sys
 import tempfile
 import zipfile
@@ -71,6 +72,7 @@ def main():
     parser.add_argument('--destination', type=Path, default=source.parent / 'guoapp')
     options = parser.parse_args()
     try:
+        validate_versions(source)
         result = finish_task(source, options.destination.expanduser(), options.message)
     except (OSError, ValueError) as error:
         print(str(error), file=sys.stderr)
@@ -79,6 +81,22 @@ def main():
     print('源码目录：' + str(options.destination.resolve()))
     print('源码压缩包：' + str(result.archive.resolve()))
     return 0
+
+
+def validate_versions(source):
+    pubspec = (source / 'pubspec.yaml').read_text(encoding='utf-8')
+    match = re.search(r'^version:\s*(\d+\.\d+\.\d+)\+(\d+)\s*$', pubspec, re.MULTILINE)
+    if match is None:
+        raise ValueError('pubspec.yaml 缺少有效版本号和构建号')
+    version, build = match.groups()
+    checks = {
+        'lib/app_layout.dart': rf"const appVersion = '{re.escape(version)}';",
+        'native/core/app_build.go': rf'const nativeAppVersion = "{re.escape(version)}"',
+        'lib/main.dart': rf'应用启动，版本: {re.escape(version)}\+{build},',
+    }
+    for name, pattern in checks.items():
+        if re.search(pattern, (source / name).read_text(encoding='utf-8')) is None:
+            raise ValueError(f'版本不一致：{name} 应为 {version}+{build}')
 
 
 if __name__ == '__main__':

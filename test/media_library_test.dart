@@ -131,29 +131,26 @@ MediaProbe fixtureProbe({
 
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
-  test(
-    'merge retains every matching video and normalizes only the minority',
-    () {
-      final plan = MergePlan.create([
-        fixtureProbe(),
-        fixtureProbe(),
-        fixtureProbe(codec: 'hevc', width: 640),
-      ]);
-      expect(plan.videoTranscodes, 1);
-      expect(plan.audioTranscodes, 0);
-      expect(plan.video.videoCodec, 'h264');
-      final audioOnly = MergePlan.create([
-        fixtureProbe(),
-        fixtureProbe(),
-        fixtureProbe(rate: 48000),
-      ]);
-      expect(audioOnly.videoTranscodes, 0);
-      expect(audioOnly.audioTranscodes, 1);
-      final identical = MergePlan.create([fixtureProbe(), fixtureProbe()]);
-      expect(identical.videoTranscodes, 0);
-      expect(identical.audioTranscodes, 0);
-    },
-  );
+  test('merge transcodes minority video and normalizes all AAC tracks', () {
+    final plan = MergePlan.create([
+      fixtureProbe(),
+      fixtureProbe(),
+      fixtureProbe(codec: 'hevc', width: 640),
+    ]);
+    expect(plan.videoTranscodes, 1);
+    expect(plan.audioTranscodes, 0);
+    expect(plan.video.videoCodec, 'h264');
+    final audioOnly = MergePlan.create([
+      fixtureProbe(),
+      fixtureProbe(),
+      fixtureProbe(rate: 48000),
+    ]);
+    expect(audioOnly.videoTranscodes, 0);
+    expect(audioOnly.audioTranscodes, 3);
+    final identical = MergePlan.create([fixtureProbe(), fixtureProbe()]);
+    expect(identical.videoTranscodes, 0);
+    expect(identical.audioTranscodes, 0);
+  });
 
   test('missing audio gets silence without discarding existing sound', () {
     final plan = MergePlan.create([
@@ -163,7 +160,7 @@ void main() {
     ]);
     expect(plan.audio, isNotNull);
     expect(plan.videoTranscodes, 0);
-    expect(plan.audioTranscodes, 2);
+    expect(plan.audioTranscodes, 3);
   });
 
   test(
@@ -233,7 +230,7 @@ void main() {
         await expectLater(
           library.merge(jobs),
           throwsA(
-            predicate((Object error) => error.toString().contains('已取消')),
+            predicate((Object error) => error.toString().contains('已停止')),
           ),
         );
         expect(executor.commands, isEmpty);
@@ -250,7 +247,9 @@ void main() {
 
   bool available;
   try {
-    available = Process.runSync('ffmpeg', ['-version']).exitCode == 0;
+    available =
+        Process.runSync('ffmpeg', ['-version']).exitCode == 0 &&
+        Process.runSync('ffprobe', ['-version']).exitCode == 0;
   } catch (_) {
     available = false;
   }

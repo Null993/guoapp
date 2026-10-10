@@ -325,23 +325,39 @@ void main() {
       ),
     );
     await tick(tester);
-    await tester.tap(find.byKey(const ValueKey('pause-1')));
+    await tester.tap(find.text('测试短剧'));
+    await tick(tester);
+    await tester.tap(find.byTooltip('分集操作').first);
+    await tick(tester);
+    await tester.tap(find.text('暂停'));
     await tick(tester);
     expect(repository.commands, ['pause:1']);
-    await tester.tap(find.byKey(const ValueKey('resume-1')));
+    await tester.tap(find.byTooltip('分集操作').first);
+    await tick(tester);
+    await tester.tap(find.text('继续 / 重试'));
     await tick(tester);
     expect(repository.commands.last, 'resume:1');
+    await tester.tap(find.byTooltip('筛选下载合集'));
+    await tick(tester);
     await tester.tap(find.text('已下载').first);
     await tick(tester);
+    await tester.tap(find.text('应用'));
+    await tick(tester);
     expect(find.byKey(const ValueKey('download-task-1')), findsNothing);
-    await tester.tap(find.byKey(const ValueKey('remove-2')));
+    await tester.pump(const Duration(seconds: 5));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byTooltip('分集操作').first);
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('删除视频'));
     await tester.pumpAndSettle();
     await tester.tap(find.text('保留'));
     await tester.pumpAndSettle();
     expect(repository.commands, isNot(contains('remove:2')));
-    await tester.tap(find.byKey(const ValueKey('remove-2')));
+    await tester.tap(find.byTooltip('分集操作').first);
     await tester.pumpAndSettle();
-    await tester.tap(find.text('删除'));
+    await tester.tap(find.text('删除视频'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('确认删除'));
     await tester.pumpAndSettle();
     expect(repository.commands.last, 'remove:2');
     expect(find.text('暂无符合条件的任务'), findsOneWidget);
@@ -384,7 +400,9 @@ void main() {
         ),
       );
       await tick(tester);
-      await tester.tap(find.byKey(const ValueKey('local-play-3')));
+      await tester.tap(find.text('测试短剧'));
+      await tick(tester);
+      await tester.tap(find.byKey(const ValueKey('download-task-3')));
       await tester.pumpAndSettle();
       expect(find.text('offline player'), findsOneWidget);
       expect(repository.detailCalls, 0);
@@ -476,7 +494,7 @@ void main() {
   );
 
   testWidgets(
-    'TV download navigation and long queue remain usable with only the remote',
+    'TV download controls accept remote input and a long queue can scroll',
     (tester) async {
       size(tester, const Size(960, 540));
       final repository = DownloadRepository();
@@ -494,18 +512,28 @@ void main() {
       await tester.pumpAndSettle();
       await tester.sendKeyEvent(LogicalKeyboardKey.select);
       await tester.pumpAndSettle();
-      focusRemote(tester, find.byKey(const ValueKey('download-task-1')));
+      await tester.tap(find.text('测试短剧'));
       await tester.pumpAndSettle();
-      for (var i = 0; i < 12; i++) {
-        await tester.sendKeyEvent(LogicalKeyboardKey.arrowDown);
-        await tester.pumpAndSettle();
-      }
-      await tester.sendKeyEvent(LogicalKeyboardKey.select);
+      final menu = find.byTooltip('分集操作').first;
+      final icon = find.descendant(of: menu, matching: find.byType(Icon)).first;
+      Focus.of(tester.element(icon)).requestFocus();
       await tester.pumpAndSettle();
-      expect(find.text('测试短剧 · 第 13 集').last, findsOneWidget);
-      await tester.sendKeyEvent(LogicalKeyboardKey.select);
+      await tester.sendKeyEvent(LogicalKeyboardKey.enter);
+      await tester.pumpAndSettle();
+      await tester.sendKeyEvent(LogicalKeyboardKey.arrowDown);
+      await tester.sendKeyEvent(LogicalKeyboardKey.enter);
       await tick(tester);
-      expect(repository.commands.last, 'resume:13');
+      expect(repository.commands.last, 'resume:1');
+      final row = find.byKey(const ValueKey('download-task-13'));
+      await tester.scrollUntilVisible(
+        row,
+        200,
+        scrollable: find.byType(Scrollable).last,
+      );
+      expect(
+        find.descendant(of: row, matching: find.textContaining('第 13 集')),
+        findsOneWidget,
+      );
       await tester.pumpWidget(const SizedBox.shrink());
       expect(tester.takeException(), isNull);
     },

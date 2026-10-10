@@ -148,7 +148,8 @@ void main() {
         'tv-player-episodes',
       );
       expect(repository.active.length, 1);
-      await press(tester, LogicalKeyboardKey.arrowRight);
+      focusRemote(tester, find.byKey(const ValueKey('tv-settings')));
+      await settle(tester);
       await press(tester, LogicalKeyboardKey.select);
       expect(find.text('倍速'), findsOneWidget);
       await press(tester, LogicalKeyboardKey.arrowRight);

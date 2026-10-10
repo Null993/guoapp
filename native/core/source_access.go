@@ -94,14 +94,8 @@ func (d *Downloader) sourceAccessFor(source string) (nativeSourceAccess, bool) {
 }
 
 func (d *Downloader) accessForRequest(request *http.Request) (nativeSourceAccess, bool) {
-	source := providerSourceForURL(request.URL.String())
 	d.sourceAccessMu.RLock()
 	defer d.sourceAccessMu.RUnlock()
-	if source != "" {
-		if access, found := d.sourceAccess[source]; found {
-			return access, true
-		}
-	}
 	for _, access := range d.sourceAccess {
 		if sameRequestOrigin(access.Origin, request) {
 			return access, true

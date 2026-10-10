@@ -204,11 +204,15 @@ func (c *huangdouAPIClient) callOnce(ctx context.Context, path string, data map[
 		return err
 	}
 	access, configured := c.d.sourceAccessFor(sourceHuangdou)
+	address, err := url.Parse(strings.TrimRight(c.host, "/") + "/api" + path)
+	if err != nil {
+		return err
+	}
 	token := ""
 	deviceID := c.deviceID
 	cookie := ""
 	userAgent := ""
-	if configured {
+	if configured && sameRequestOrigin(access.Origin, &http.Request{URL: address}) {
 		token = access.Token
 		deviceID = firstNonEmpty(access.DeviceID, deviceID)
 		cookie = access.Cookie

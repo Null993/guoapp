@@ -24,6 +24,29 @@ var nativeAICategories = []nativeCategory{
 	{ID: "ai-mogai", Name: "AI 魔改"},
 }
 
+func nativeAIPrimaryCategoryID() string {
+	if len(nativeAICategories) == 0 {
+		return ""
+	}
+	return nativeAICategories[0].ID
+}
+
+type huangguoAICatalogError struct {
+	primary  error
+	failures []error
+}
+
+func (failure *huangguoAICatalogError) Error() string {
+	if len(failure.failures) == 0 {
+		return ""
+	}
+	return errors.Join(failure.failures...).Error()
+}
+
+func (failure *huangguoAICatalogError) Unwrap() []error {
+	return failure.failures
+}
+
 func nativeCatalogKey(source, category string) string {
 	source = canonicalProviderSource(source)
 	if category = strings.TrimSpace(category); category != "" {
@@ -215,16 +238,27 @@ func (d *Downloader) fetchHuangguoAICatalogPage(ctx context.Context, page int, c
 			}
 		}(index, entry)
 	}
+	primary := category
+	if primary == "" {
+		primary = nativeAIPrimaryCategoryID()
+	}
 	group.Wait()
 	var items []Drama
 	var failures []error
+	var primaryErr error
 	more := false
-	for _, result := range results {
+	for index, result := range results {
 		items = append(items, result.items...)
 		more = more || len(result.items) >= 24 || result.err != nil
 		if result.err != nil {
 			failures = append(failures, result.err)
+			if categories[index].ID == primary {
+				primaryErr = result.err
+			}
 		}
 	}
-	return items, more, errors.Join(failures...)
+	if len(failures) == 0 {
+		return items, more, nil
+	}
+	return items, more, &huangguoAICatalogError{primary: primaryErr, failures: failures}
 }
