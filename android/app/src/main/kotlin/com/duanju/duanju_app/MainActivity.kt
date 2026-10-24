@@ -208,6 +208,21 @@ class MainActivity : FlutterActivity() {
                             window.attributes = lp
                             result.success(true)
                         }
+                        "setKeepScreenOn" -> {
+                            val enabled = call.argument<Boolean>("enabled")
+                            if (enabled == null) {
+                                result.error("invalid_arg", "缺少常亮状态", null)
+                            } else {
+                                runOnUiThread {
+                                    if (enabled) {
+                                        window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+                                    } else {
+                                        window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+                                    }
+                                }
+                                result.success(true)
+                            }
+                        }
                         "openExternalPlayer" -> {
                             val url = call.argument<String>("url")
                             val title = call.argument<String>("title") ?: "短剧"

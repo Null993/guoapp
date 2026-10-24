@@ -122,7 +122,7 @@ func (transport *cdnTransport) pinnedTransport(host string, proxyURL *url.URL, r
 	}
 	pinned := transport.base.Clone()
 	if pinned.TLSClientConfig == nil {
-		pinned.TLSClientConfig = &tls.Config{}
+		pinned.TLSClientConfig = &tls.Config{MinVersion: tls.VersionTLS12}
 	}
 	pinned.TLSClientConfig.ServerName = host
 	pinned.Proxy = http.ProxyURL(proxyURL)

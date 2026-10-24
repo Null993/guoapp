@@ -1,39 +1,55 @@
 package core
 
 import (
-	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"net/http"
 	"sort"
 	"strconv"
 	"strings"
 	"time"
 )
 
-func (downloader *Downloader) resolveHongguoAppMedia(ctx context.Context, videoID string) (providerMedia, error) {
-	if !hongguoNumericID.MatchString(videoID) {
-		return providerMedia{}, errors.New("红果视频 ID 无效")
-	}
-	payload := map[string]any{
-		"video_id": videoID, "content_type": 1,
-		"biz_param": map[string]any{"need_all_video_definition": true, "video_platform": 3},
-	}
-	result, err := downloader.hongguoAppRequest(ctx, http.MethodPost, "/novel/player/video_model/v1/", nil, payload)
-	if err != nil {
-		return providerMedia{}, err
-	}
-	data := nestedMap(result, "data")
+func hongguoVideoModel(data map[string]any) (map[string]any, error) {
 	model, _ := data["video_model"].(map[string]any)
-	if encoded, ok := data["video_model"].(string); ok {
-		decoder := json.NewDecoder(strings.NewReader(encoded))
+	if encoded, ok := data["video_model"].(string); ok && encoded != "" {
+		text := encoded
+		trimmed := strings.TrimSpace(text)
+		if !strings.HasPrefix(trimmed, "{") && !strings.HasPrefix(trimmed, "[") {
+			if decoded, err := decodeHongguoBase64(encoded); err == nil && len(decoded) > 0 {
+				text = string(decoded)
+			}
+		}
+		decoder := json.NewDecoder(strings.NewReader(text))
 		decoder.UseNumber()
 		if err := decoder.Decode(&model); err != nil {
-			return providerMedia{}, errors.New("红果 App 播放信息格式异常")
+			return nil, fmt.Errorf("红果 App 播放信息格式异常（%s）: %w", hongguoClipText(text, 24), err)
 		}
 	}
-	return selectHongguoAppMedia(model)
+	if len(anyList(model["video_list"])) == 0 {
+		if rows := anyList(data["video_list"]); len(rows) > 0 {
+			merged := make(map[string]any, len(model)+3)
+			for key, value := range model {
+				merged[key] = value
+			}
+			merged["video_list"] = data["video_list"]
+			if _, ok := merged["video_duration"]; !ok {
+				merged["video_duration"] = data["video_duration"]
+			}
+			if _, ok := merged["duration"]; !ok {
+				merged["duration"] = data["duration"]
+			}
+			model = merged
+		}
+	}
+	return model, nil
+}
+
+func hongguoClipText(value string, limit int) string {
+	if len(value) <= limit {
+		return value
+	}
+	return value[:limit] + "…"
 }
 
 func selectHongguoAppMedia(model map[string]any) (providerMedia, error) {

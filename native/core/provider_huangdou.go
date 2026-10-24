@@ -194,6 +194,9 @@ func huangdouPreviewOnly(data map[string]any, media, host string) bool {
 
 func (c *huangdouAPIClient) callOnce(ctx context.Context, path string, data map[string]any, out *any) error {
 	path = "/" + strings.TrimLeft(path, "/")
+	if path == "/drama/detail" || path == "/drama/play" {
+		ctx = context.WithValue(ctx, automaticReadOnlyKey{}, true)
+	}
 	rid := uuidLike()
 	key, err := huangdouKey(rid)
 	if err != nil {

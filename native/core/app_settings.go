@@ -68,6 +68,9 @@ type proxyRouter struct {
 }
 
 func (router *proxyRouter) proxy(request *http.Request) (*url.URL, error) {
+	if route, ok := request.Context().Value(networkRouteKey{}).(networkRoute); ok {
+		return route.proxy, nil
+	}
 	if request.URL.Hostname() == "127.0.0.1" || request.URL.Hostname() == "localhost" || request.URL.Hostname() == "::1" {
 		return nil, nil
 	}

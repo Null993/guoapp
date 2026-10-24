@@ -46,10 +46,11 @@ type Config struct {
 }
 
 type httpChain struct {
-	base     *http.Transport
-	cdn      *cdnTransport
-	resolver *dnsResolver
-	browser  *huangguoBrowserTransport
+	base      *http.Transport
+	cdn       *cdnTransport
+	resolver  *dnsResolver
+	browser   *sourceBrowserTransport
+	automatic *autoNetworkTransport
 }
 
 type chainTransport struct {
@@ -61,18 +62,18 @@ func (transport *chainTransport) RoundTrip(request *http.Request) (*http.Respons
 	if chain == nil {
 		return nil, errors.New("站源网络客户端尚未初始化")
 	}
-	return chain.browser.RoundTrip(request)
+	return chain.automatic.RoundTrip(request)
 }
 
 func (transport *chainTransport) CloseIdleConnections() {
 	if chain := transport.current.Load(); chain != nil {
-		chain.browser.CloseIdleConnections()
+		chain.automatic.CloseIdleConnections()
 	}
 }
 
 func isProductionNetworkTransport(transport http.RoundTripper) bool {
 	switch transport.(type) {
-	case *chainTransport, *huangguoBrowserTransport:
+	case *chainTransport, *sourceBrowserTransport, *autoNetworkTransport:
 		return true
 	default:
 		return false
@@ -224,6 +225,8 @@ type nativeEngine struct {
 	catalogSaveError  error
 	sourceSaveError   error
 	sourceRetryPolicy *nativeSourceRetryPolicy
+	routeLatencyMu    sync.Mutex
+	routeLatencies    map[string]routeLatencyEntry
 	catalogDiskWrites int
 	covers            *nativeCoverCache
 	stream            *nativeStreamServer
@@ -315,6 +318,9 @@ func (d *Downloader) buildHTTPClient() {
 				return errors.New("站源重定向次数过多")
 			}
 			if len(via) > 0 && !sameRequestOrigin(via[0].URL.String(), request) {
+				if via[0].Header.Get("X-Medusa") != "" || via[0].Header.Get("X-Argus") != "" {
+					return errors.New("红果签名请求不能跨域重定向")
+				}
 				if request.Method == http.MethodPost && providerSourceForURL(via[0].URL.String()) == sourceHuangdou {
 					return errors.New("黄豆授权请求不能跨域重定向")
 				}
@@ -334,7 +340,8 @@ func (d *Downloader) newHTTPChain() *httpChain {
 	transport.Proxy = d.proxyRouter.proxy
 	resolver := newDNSResolver(transport)
 	cdn := newCDNTransport(transport, resolver)
-	return &httpChain{base: transport, cdn: cdn, resolver: resolver, browser: newHuangguoBrowserTransport(cdn, d)}
+	browser := newHuangguoBrowserTransport(cdn, d)
+	return &httpChain{base: transport, cdn: cdn, resolver: resolver, browser: browser, automatic: newAutoNetworkTransport(browser, d)}
 }
 
 func (d *Downloader) currentDNSResolver() *dnsResolver {
@@ -372,7 +379,7 @@ func (d *Downloader) setInsecureTLS(insecure bool) {
 	previous := d.chain.current.Load()
 	d.chain.current.Store(d.newHTTPChain())
 	if previous != nil {
-		previous.browser.CloseIdleConnections()
+		previous.automatic.CloseIdleConnections()
 	}
 }
 
@@ -943,6 +950,13 @@ func (engine *nativeEngine) nativeResolve(ctx context.Context, input nativeInput
 	choice := nativePlaybackChoices(media, input.Quality)
 	if series, video, valid := hongguoPlaybackIDs(task); valid {
 		choice.danmakuSeries, choice.danmakuVideo = series, video
+	}
+	engine.nativeRankRoutes(&choice)
+	if len(choice.media) > 1 {
+		if _, ok := engine.routeLatency(nativeRouteKey(choice.media[0])); !ok {
+			engine.probeRoutes(ctx, choice, routeProbeBudget)
+			engine.nativeRankRoutes(&choice)
+		}
 	}
 	return engine.nativeOpenPlayback(ctx, choice)
 }

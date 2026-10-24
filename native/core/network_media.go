@@ -129,6 +129,38 @@ func (d *Downloader) doMediaRequest(request *http.Request) (*http.Response, erro
 }
 
 func (d *Downloader) doMediaRequestWithClient(request *http.Request, client *http.Client) (*http.Response, error) {
+	if (request.Method != http.MethodGet && request.Method != http.MethodHead) ||
+		(!d.isHuangguoVideoURL(request.URL) && !huangguoBrowserHost(request.URL.Hostname())) {
+		return d.doMediaRequestAttempt(request, client)
+	}
+	for attempt := 0; ; attempt++ {
+		if err := request.Context().Err(); err != nil {
+			return nil, err
+		}
+		response, err := d.doMediaRequestAttempt(request.Clone(request.Context()), client)
+		var blocked *requestBackoff
+		retry := err != nil && !isCertificateSourceError(err) && !sourceTerminalError(err) && !errors.As(err, &blocked) && request.Context().Err() == nil
+		if response != nil {
+			switch response.StatusCode {
+			case http.StatusRequestTimeout, http.StatusInternalServerError, http.StatusBadGateway, http.StatusServiceUnavailable, http.StatusGatewayTimeout:
+				retry = true
+			}
+		}
+		if !retry || attempt >= 2 {
+			return response, err
+		}
+		if response != nil {
+			response.Body.Close()
+		}
+		select {
+		case <-time.After(time.Duration(attempt+1) * 200 * time.Millisecond):
+		case <-request.Context().Done():
+			return nil, request.Context().Err()
+		}
+	}
+}
+
+func (d *Downloader) doMediaRequestAttempt(request *http.Request, client *http.Client) (*http.Response, error) {
 	mediaRequestHeaders(request, request.Header.Get("Referer"))
 	if credentials, _ := request.Context().Value(providerMediaCredentialsKey{}).(*providerMediaCredentials); credentials != nil {
 		if err := credentials.apply(request); err != nil {

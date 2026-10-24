@@ -6,7 +6,7 @@ import 'package:flutter/services.dart';
 
 export 'app_build.dart';
 
-const appVersion = '0.2.68';
+const appVersion = '0.2.76';
 
 ThemeData televisionTheme(ThemeData theme) {
   final colors = theme.colorScheme;
@@ -100,6 +100,13 @@ class AppDevice {
     if (defaultTargetPlatform != TargetPlatform.android) return;
     try {
       await channel.invokeMethod('resetBrightness');
+    } catch (_) {}
+  }
+
+  static Future<void> setKeepScreenOn(bool enabled) async {
+    if (defaultTargetPlatform != TargetPlatform.android) return;
+    try {
+      await channel.invokeMethod('setKeepScreenOn', {'enabled': enabled});
     } catch (_) {}
   }
 }

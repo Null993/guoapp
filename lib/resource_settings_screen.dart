@@ -238,9 +238,7 @@ class _ResourceSettingsScreenState extends State<ResourceSettingsScreen> {
                     Padding(
                       padding: const EdgeInsets.symmetric(vertical: 12),
                       child: Text(
-                        _settings!.systemProxyStatus.isEmpty
-                            ? '使用系统静态代理；未配置时使用环境变量或直连。'
-                            : _settings!.systemProxyStatus,
+                        '${_settings!.systemProxyStatus}\n网络连接失败时自动尝试直连和已配置的手动代理；不会改写连接方式。',
                       ),
                     ),
                   if (_mode == 'manual')

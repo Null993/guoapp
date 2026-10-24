@@ -66,6 +66,7 @@ type nativeStreamRecorder struct {
 	http.ResponseWriter
 	status int
 	detail string
+	failed bool
 }
 
 func (recorder *nativeStreamRecorder) WriteHeader(status int) {
@@ -171,7 +172,7 @@ func (stream *nativeStreamServer) nativeOpen(media providerMedia) (string, strin
 	stream.sessions[token] = session
 	stream.mu.Unlock()
 	entry := nativeStreamAsset{address: media.URL, contentType: "video/mp4"}
-	isHLS := media.Playlist != "" || len(media.HLSKey) > 0
+	isHLS := media.Playlist != ""
 	if parsed, err := url.Parse(media.URL); err == nil && strings.HasSuffix(strings.ToLower(parsed.Path), ".m3u8") {
 		isHLS = true
 	}
@@ -284,6 +285,27 @@ func (stream *nativeStreamServer) nativeRewrite(token string, session *nativeStr
 	return strings.Join(output, "\n"), nil
 }
 
+func (stream *nativeStreamServer) nativeProbePlaylist(ctx context.Context, session *nativeStreamSession, address string) bool {
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, address, nil)
+	if err != nil {
+		return false
+	}
+	request.Header.Set("User-Agent", userAgent)
+	request.Header.Set("Referer", session.referer)
+	request.Header.Set("Range", "bytes=0-511")
+	response, err := stream.nativeRequest(request)
+	if err != nil {
+		return false
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusOK && response.StatusCode != http.StatusPartialContent {
+		return false
+	}
+	peek, _ := io.ReadAll(io.LimitReader(response.Body, 512))
+	text := strings.TrimSpace(strings.TrimPrefix(string(peek), "\ufeff"))
+	return strings.HasPrefix(text, "#EXTM3U")
+}
+
 func (stream *nativeStreamServer) nativeServe(writer http.ResponseWriter, request *http.Request) {
 	if request.Method != http.MethodGet && request.Method != http.MethodHead {
 		writer.WriteHeader(http.StatusMethodNotAllowed)
@@ -315,7 +337,7 @@ func (stream *nativeStreamServer) nativeServe(writer http.ResponseWriter, reques
 		if status == 0 {
 			status = http.StatusOK
 		}
-		session.record(status >= 400, request.Method+" /"+parts[1]+" -> "+strconv.Itoa(status)+recorder.detail)
+		session.record(status >= 400 || recorder.failed, request.Method+" /"+parts[1]+" -> "+strconv.Itoa(status)+recorder.detail)
 	}()
 	session.mu.Lock()
 	asset, found := session.assets[parts[1]]
@@ -396,8 +418,9 @@ func (stream *nativeStreamServer) nativeServe(writer http.ResponseWriter, reques
 	if final := nativeStreamTarget(finalURL.String()); final != "" && final != nativeStreamTarget(asset.address) {
 		target = " 上游 " + final
 	}
-	playlistHint := strings.Contains(asset.contentType, "mpegurl") || strings.Contains(contentType, "mpegurl") ||
-		strings.HasSuffix(strings.ToLower(finalURL.Path), ".m3u8")
+	contentIsMP4 := strings.Contains(contentType, "video/mp4")
+	playlistHint := strings.Contains(contentType, "mpegurl") || (!contentIsMP4 &&
+		(strings.Contains(asset.contentType, "mpegurl") || strings.HasSuffix(strings.ToLower(finalURL.Path), ".m3u8")))
 	reader := bufio.NewReader(response.Body)
 	playlist := playlistHint
 	if request.Method == http.MethodGet {
@@ -406,6 +429,10 @@ func (stream *nativeStreamServer) nativeServe(writer http.ResponseWriter, reques
 		if playlistHint && !playlist {
 			recorder.detail = target + " 未返回播放列表"
 		}
+	}
+	if request.Method == http.MethodHead && !playlist &&
+		(contentType == "" || strings.Contains(contentType, "octet-stream") || strings.Contains(contentType, "text/plain")) {
+		playlist = stream.nativeProbePlaylist(ctx, session, asset.address)
 	}
 	if playlist && request.Method == http.MethodHead {
 		writer.Header().Set("Content-Type", "application/vnd.apple.mpegurl")
@@ -440,6 +467,19 @@ func (stream *nativeStreamServer) nativeServe(writer http.ResponseWriter, reques
 	writer.WriteHeader(response.StatusCode)
 	recorder.detail = target + " " + response.Header.Get("Content-Length") + " 字节"
 	if request.Method == http.MethodGet {
-		_, _ = io.Copy(writer, reader)
+		pointer := nativeStreamCopyPool.Get().(*[]byte)
+		written, copyErr := io.CopyBuffer(struct{ io.Writer }{writer}, struct{ io.Reader }{reader}, *pointer)
+		nativeStreamCopyPool.Put(pointer)
+		if copyErr != nil && request.Context().Err() == nil && session.ctx.Err() == nil {
+			recorder.failed = true
+			recorder.detail += " 转发中断（已发送 " + strconv.FormatInt(written, 10) + " 字节）: " + publicError(copyErr).Error()
+		}
 	}
 }
+
+const nativeStreamCopyBuffer = 128 << 10
+
+var nativeStreamCopyPool = sync.Pool{New: func() any {
+	buffer := make([]byte, nativeStreamCopyBuffer)
+	return &buffer
+}}

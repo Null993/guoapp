@@ -37,6 +37,7 @@ var (
 	errYeguoDecode        = errors.New("野果接口响应校验或解码失败")
 	yeguoModuleImport     = regexp.MustCompile(`(?s)import\s*\{([^{};]+)\}\s*from\s*["'\x60]([^"'\x60]+)["'\x60]`)
 	yeguoPublicField      = regexp.MustCompile(`\b(version|mode|padding|key|iv|sign_key)\s*:\s*(?:[a-zA-Z_$][a-zA-Z0-9_$]*\(\s*)?["'\x60]([^"'\x60\\\r\n]{1,512})["'\x60]`)
+	yeguoScriptAPI        = regexp.MustCompile(`["'\x60](https?://[^"'\x60\s\\]+/api\.php/?)["'\x60]`)
 	yeguoTransitBase64    = regexp.MustCompile(`Base64\.decode\(["']([A-Za-z0-9+/=]{128,})["']\)`)
 	yeguoTransitSuffix    = regexp.MustCompile(`(?i)\+\s*["']\.([a-z0-9-]+(?:\.[a-z0-9-]+)+)["']`)
 	yeguoTransitWords     = regexp.MustCompile(`(?s)\bwords\s*=\s*["']([^"']+)["']\s*\.split\(["'],["']\)`)
@@ -270,8 +271,14 @@ func (client *yeguoAPIClient) requestClient() *http.Client {
 	if client.downloader.proxyRouter != nil {
 		transport.Proxy = client.downloader.proxyRouter.proxy
 	}
+	host := ""
+	if configured, err := url.Parse(client.downloader.cfg.YeguoAPIURL); err == nil {
+		host = configured.Host
+	}
+	resolver := newDNSResolver(transport)
+	browser := newSourceBrowserTransport(newCDNTransport(transport, resolver), client.downloader, sourceYeguo, host)
 	client.httpClient = &http.Client{
-		Transport: transport,
+		Transport: newAutoNetworkTransport(browser, client.downloader),
 		CheckRedirect: func(request *http.Request, via []*http.Request) error {
 			if len(via) >= 10 {
 				return errors.New("野果接口重定向次数过多")
@@ -363,6 +370,24 @@ func yeguoScriptURL(base, reference string) string {
 	return address.String()
 }
 
+func yeguoScriptAPIBase(script, pageURL string) string {
+	page, err := url.Parse(pageURL)
+	if err != nil {
+		return ""
+	}
+	for _, match := range yeguoScriptAPI.FindAllStringSubmatch(script, 16) {
+		address, err := url.Parse(match[1])
+		if err != nil || !isProviderHTTPMediaURL(match[1]) || address.User != nil || address.RawQuery != "" || address.Fragment != "" {
+			continue
+		}
+		if providerSourceForURL(match[1]) != sourceYeguo && providerMediaOrigin(address) != providerMediaOrigin(page) {
+			continue
+		}
+		return strings.TrimRight(match[1], "/")
+	}
+	return ""
+}
+
 func yeguoPublicBytes(value string) []byte {
 	if !strings.Contains(value, "_") {
 		return []byte(value)
@@ -432,7 +457,7 @@ func (client *yeguoAPIClient) discoverConfigurationAt(ctx context.Context, site 
 		return nil, err
 	}
 	apiBase, err := yeguoAPIBase(document, d.cfg.YeguoAPIURL)
-	if err != nil {
+	if err != nil && d.cfg.YeguoAPIURL != "" {
 		return nil, err
 	}
 	entry := ""
@@ -450,12 +475,13 @@ func (client *yeguoAPIClient) discoverConfigurationAt(ctx context.Context, site 
 	if err != nil {
 		return nil, err
 	}
+	if apiBase == "" {
+		apiBase = yeguoScriptAPIBase(entryBody, pageURL)
+	}
+	access := parseYeguoPublicConfiguration(entryBody)
 	imports := yeguoModuleImport.FindAllStringSubmatch(entryBody, 64)
-	sort.SliceStable(imports, func(i, j int) bool {
-		return !strings.Contains(imports[i][1], ",") && strings.Contains(imports[j][1], ",")
-	})
 	seen := map[string]bool{}
-	var lastErr error
+	var addresses []string
 	for _, imported := range imports {
 		if len(imported[1]) > 2400 {
 			continue
@@ -468,27 +494,60 @@ func (client *yeguoAPIClient) discoverConfigurationAt(ctx context.Context, site 
 			break
 		}
 		seen[address] = true
-		body, err := d.fetchProviderText(ctx, address, pageURL)
-		if err != nil {
-			lastErr = err
-			var backoff *requestBackoff
-			if errors.As(err, &backoff) || ctx.Err() != nil {
-				return nil, err
-			}
-			continue
-		}
-		access := parseYeguoPublicConfiguration(body)
-		if access == nil {
-			continue
-		}
-		var identifier [16]byte
-		if _, err := rand.Read(identifier[:]); err != nil {
-			return nil, errors.New("无法初始化野果请求会话")
-		}
-		access.base, access.site, access.identifier, access.loadedAt = apiBase, site, hex.EncodeToString(identifier[:]), time.Now()
-		return access, nil
+		addresses = append(addresses, address)
 	}
-	return nil, errors.Join(errors.New("野果接口配置已变化，暂时无法解码，请稍后重试"), lastErr)
+	type moduleResult struct {
+		body string
+		err  error
+	}
+	moduleCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	results := make(chan moduleResult, len(addresses))
+	semaphore := make(chan struct{}, 3)
+	for _, address := range addresses {
+		go func() {
+			select {
+			case semaphore <- struct{}{}:
+				defer func() { <-semaphore }()
+			case <-moduleCtx.Done():
+				results <- moduleResult{err: moduleCtx.Err()}
+				return
+			}
+			body, err := d.fetchProviderText(moduleCtx, address, pageURL)
+			results <- moduleResult{body: body, err: err}
+		}()
+	}
+	var lastErr error
+	for pending := len(addresses); access == nil || apiBase == ""; pending-- {
+		if pending == 0 {
+			return nil, errors.Join(errors.New("野果接口配置已变化，暂时无法解码，请稍后重试"), lastErr)
+		}
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case result := <-results:
+			if result.err != nil {
+				lastErr = result.err
+				var backoff *requestBackoff
+				if errors.As(result.err, &backoff) && backoff.status != http.StatusNotFound && backoff.status != http.StatusGone {
+					return nil, result.err
+				}
+				continue
+			}
+			if access == nil {
+				access = parseYeguoPublicConfiguration(result.body)
+			}
+			if apiBase == "" {
+				apiBase = yeguoScriptAPIBase(result.body, pageURL)
+			}
+		}
+	}
+	var identifier [16]byte
+	if _, err := rand.Read(identifier[:]); err != nil {
+		return nil, errors.New("无法初始化野果请求会话")
+	}
+	access.base, access.site, access.identifier, access.loadedAt = apiBase, site, hex.EncodeToString(identifier[:]), time.Now()
+	return access, nil
 }
 
 func decodeYeguoJSONObject(body []byte) (map[string]any, error) {
@@ -597,6 +656,8 @@ func (client *yeguoAPIClient) call(ctx context.Context, route string, parameters
 			request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 		}
 		request.Header.Set("Accept", "application/json, text/plain, */*")
+		request.Header.Set("Sec-Fetch-Mode", "cors")
+		request.Header.Set("Sec-Fetch-Dest", "empty")
 		site := firstNonEmpty(access.site, client.site, yeguoBaseURL)
 		request.Header.Set("Origin", site)
 		request.Header.Set("Referer", site+"/")

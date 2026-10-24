@@ -9,10 +9,13 @@ import 'package:path_provider/path_provider.dart';
 import 'core_bridge.dart';
 import 'app_theme.dart';
 import 'background_downloads.dart';
+import 'backup_actions.dart';
 import 'local_store.dart';
+import 'playback_preferences.dart';
 import 'profiles_screen.dart';
 import 'app_build.dart';
 import 'sources_screen.dart';
+import 'webdav_settings_screen.dart';
 import 'widgets.dart';
 import 'resource_settings_screen.dart';
 import 'lan_screen.dart';
@@ -100,30 +103,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
           throw const FormatException('备份文件过大或无法读取');
         }
         final content = utf8.decode(await file.readAsBytes());
-        final data = widget.store.validateBackup(content);
         if (!mounted) return;
-        final accepted = await showDialog<bool>(
-          context: context,
-          builder: (context) => AlertDialog(
-            title: const Text('恢复备份？'),
-            content: Text(
-              '包含 ${(data['profiles'] as List).length} 个用户。将替换本机的用户、追剧、观看记录和偏好设置；已下载视频保留。恢复后使用备份内的管理员密码登录。',
-            ),
-            actions: [
-              TextButton(
-                onPressed: () => Navigator.pop(context, false),
-                child: const Text('取消'),
-              ),
-              FilledButton(
-                onPressed: () => Navigator.pop(context, true),
-                child: const Text('恢复'),
-              ),
-            ],
-          ),
-        );
-        if (accepted != true || !mounted) return;
-        await widget.store.importBackup(content);
-        if (mounted) Navigator.of(context).popUntil((route) => route.isFirst);
+        await restoreBackupContent(context, widget.store, content);
       }
     } catch (error) {
       if (mounted) setState(() => _message = error.toString());
@@ -193,6 +174,19 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 subtitle: const Text('查看并复制应用运行与播放器的详细事件日志'),
                 trailing: const Icon(Icons.chevron_right_rounded),
                 onTap: () => DiaryService.showDiaryDialog(context),
+              ),
+              ListTile(
+                key: const ValueKey('playback-gesture-setting'),
+                leading: const Icon(Icons.gesture_rounded),
+                title: const Text('播放器与手势'),
+                subtitle: const Text('画面比例、滑动调节、双击与长按倍速等播放设置'),
+                trailing: const Icon(Icons.chevron_right_rounded),
+                onTap: () => Navigator.push(
+                  context,
+                  MaterialPageRoute<void>(
+                    builder: (_) => PlaybackGestureScreen(store: widget.store),
+                  ),
+                ),
               ),
               if (widget.store.canDownload)
                 ListTile(
@@ -282,6 +276,21 @@ class _SettingsScreenState extends State<SettingsScreen> {
                   title: const Text('恢复配置备份'),
                   onTap: _busy ? null : () => _backup(true),
                 ),
+                ListTile(
+                  key: const ValueKey('webdav-settings'),
+                  leading: const Icon(Icons.cloud_sync_outlined),
+                  title: const Text('WebDAV 备份'),
+                  subtitle: const Text('通过 WebDAV 同步配置、观看记录与追剧'),
+                  trailing: const Icon(Icons.chevron_right_rounded),
+                  onTap: _busy
+                      ? null
+                      : () => Navigator.of(context).push(
+                          MaterialPageRoute(
+                            builder: (_) =>
+                                WebDavSettingsScreen(store: widget.store),
+                          ),
+                        ),
+                ),
               ],
               if (Platform.isIOS)
                 const Padding(
@@ -298,6 +307,225 @@ class _SettingsScreenState extends State<SettingsScreen> {
           ),
         ),
       ),
+    ),
+  );
+}
+
+class PlaybackGestureScreen extends StatefulWidget {
+  const PlaybackGestureScreen({super.key, required this.store});
+  final LocalStore store;
+  @override
+  State<PlaybackGestureScreen> createState() => _PlaybackGestureScreenState();
+}
+
+class _PlaybackGestureScreenState extends State<PlaybackGestureScreen> {
+  bool _busy = false;
+
+  Future<void> _update(PlaybackPreferences next) async {
+    setState(() => _busy = true);
+    try {
+      await widget.store.setPlaybackPreferences(next);
+    } catch (error) {
+      if (mounted) {
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text('保存失败：$error')));
+      }
+    } finally {
+      if (mounted) setState(() => _busy = false);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) => Scaffold(
+    appBar: AppBar(title: const Text('播放器与手势')),
+    body: AnimatedBuilder(
+      animation: widget.store,
+      builder: (context, _) {
+        final preferences = widget.store.playbackPreferences;
+        return Center(
+          child: ConstrainedBox(
+            constraints: const BoxConstraints(maxWidth: 720),
+            child: ListView(
+              padding: const EdgeInsets.all(16),
+              children: [
+                const Text('画面比例'),
+                const SizedBox(height: 8),
+                Wrap(
+                  spacing: 8,
+                  runSpacing: 8,
+                  children: [
+                    for (final entry in fitTypeEntries)
+                      ChoiceChip(
+                        key: ValueKey('gesture-fit-${entry.key}'),
+                        label: Text(entry.label),
+                        selected: entry.key == preferences.fitType,
+                        onSelected: _busy
+                            ? null
+                            : (_) => _update(
+                                preferences.copyWith(fitType: entry.key),
+                              ),
+                      ),
+                  ],
+                ),
+                const SizedBox(height: 8),
+                const Text(
+                  '自动：完整显示画面；裁剪：填满屏幕并裁掉多余部分；拉伸：强制铺满；等宽 / 等高：按单边对齐。',
+                  style: TextStyle(fontSize: 12, color: Colors.grey),
+                ),
+                const SizedBox(height: 20),
+                const Text('默认倍速'),
+                const SizedBox(height: 8),
+                Wrap(
+                  spacing: 8,
+                  runSpacing: 8,
+                  children: [
+                    for (final speed in playbackSpeeds)
+                      ChoiceChip(
+                        key: ValueKey('gesture-speed-$speed'),
+                        label: Text('${speed}x'),
+                        selected: speed == preferences.speed,
+                        onSelected: _busy
+                            ? null
+                            : (_) =>
+                                  _update(preferences.copyWith(speed: speed)),
+                      ),
+                  ],
+                ),
+                const SizedBox(height: 20),
+                SwitchListTile.adaptive(
+                  key: const ValueKey('gesture-slide-volume-brightness'),
+                  contentPadding: EdgeInsets.zero,
+                  title: const Text('滑动调节音量与亮度'),
+                  subtitle: const Text('左侧上下滑调亮度，右侧上下滑调音量'),
+                  value: preferences.slideVolumeBrightness,
+                  onChanged: _busy
+                      ? null
+                      : (value) => _update(
+                          preferences.copyWith(slideVolumeBrightness: value),
+                        ),
+                ),
+                SwitchListTile.adaptive(
+                  key: const ValueKey('gesture-slide-fullscreen'),
+                  contentPadding: EdgeInsets.zero,
+                  title: const Text('中部滑动切换全屏'),
+                  subtitle: const Text('播放器中三分之一区域上滑进入全屏、下滑退出全屏'),
+                  value: preferences.slideFullscreen,
+                  onChanged: _busy
+                      ? null
+                      : (value) => _update(
+                          preferences.copyWith(slideFullscreen: value),
+                        ),
+                ),
+                SwitchListTile.adaptive(
+                  key: const ValueKey('gesture-quick-double-tap'),
+                  contentPadding: EdgeInsets.zero,
+                  title: const Text('双击快进快退'),
+                  subtitle: const Text('开启后双击左 / 右区域快退 / 快进；关闭后双击任意位置播放暂停'),
+                  value: preferences.quickDoubleTap,
+                  onChanged: _busy
+                      ? null
+                      : (value) => _update(
+                          preferences.copyWith(quickDoubleTap: value),
+                        ),
+                ),
+                Padding(
+                  padding: const EdgeInsets.fromLTRB(16, 4, 4, 4),
+                  child: Wrap(
+                    spacing: 12,
+                    runSpacing: 8,
+                    crossAxisAlignment: WrapCrossAlignment.center,
+                    children: [
+                      const Text('快进快退步长'),
+                      for (final seconds in const [5, 10, 15, 30])
+                        Padding(
+                          padding: const EdgeInsets.only(right: 8),
+                          child: ChoiceChip(
+                            key: ValueKey('gesture-double-tap-$seconds'),
+                            label: Text('$seconds 秒'),
+                            selected:
+                                seconds == preferences.doubleTapSeekSeconds,
+                            onSelected: _busy
+                                ? null
+                                : (_) => _update(
+                                    preferences.copyWith(
+                                      doubleTapSeekSeconds: seconds,
+                                    ),
+                                  ),
+                          ),
+                        ),
+                    ],
+                  ),
+                ),
+                Padding(
+                  padding: const EdgeInsets.fromLTRB(16, 4, 4, 4),
+                  child: Wrap(
+                    spacing: 12,
+                    runSpacing: 8,
+                    crossAxisAlignment: WrapCrossAlignment.center,
+                    children: [
+                      const Text('横滑进度幅度'),
+                      for (final seconds in dragSeekSteps)
+                        Padding(
+                          padding: const EdgeInsets.only(right: 8),
+                          child: ChoiceChip(
+                            key: ValueKey('gesture-drag-seek-$seconds'),
+                            label: Text('$seconds 秒'),
+                            selected: seconds == preferences.dragSeekSeconds,
+                            onSelected: _busy
+                                ? null
+                                : (_) => _update(
+                                    preferences.copyWith(
+                                      dragSeekSeconds: seconds,
+                                    ),
+                                  ),
+                          ),
+                        ),
+                    ],
+                  ),
+                ),
+                const SizedBox(height: 12),
+                const Text('长按倍速'),
+                const SizedBox(height: 8),
+                Wrap(
+                  spacing: 8,
+                  runSpacing: 8,
+                  children: [
+                    for (final speed in const [2.0, 2.5, 3.0, 4.0])
+                      ChoiceChip(
+                        key: ValueKey('gesture-long-press-speed-$speed'),
+                        label: Text('${speed}x'),
+                        selected: speed == preferences.longPressSpeed,
+                        onSelected: _busy
+                            ? null
+                            : (_) => _update(
+                                preferences.copyWith(longPressSpeed: speed),
+                              ),
+                      ),
+                  ],
+                ),
+                SwitchListTile.adaptive(
+                  key: const ValueKey('gesture-auto-long-press-speed'),
+                  contentPadding: EdgeInsets.zero,
+                  title: const Text('长按使用动态倍速'),
+                  subtitle: const Text('开启后长按倍速为当前播放速度的 2 倍'),
+                  value: preferences.autoLongPressSpeed,
+                  onChanged: _busy
+                      ? null
+                      : (value) => _update(
+                          preferences.copyWith(autoLongPressSpeed: value),
+                        ),
+                ),
+                const SizedBox(height: 16),
+                const Text(
+                  '提示：手势仅在播放画面内生效；滑动到屏幕顶部左右角落松开手指可取消本次进度拖动。',
+                  style: TextStyle(fontSize: 12, color: Colors.grey),
+                ),
+              ],
+            ),
+          ),
+        );
+      },
     ),
   );
 }

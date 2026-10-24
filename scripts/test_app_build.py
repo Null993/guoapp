@@ -76,6 +76,7 @@ class AppBuildTests(unittest.TestCase):
                     arguments = [str(script)] + (['--all-sources'] if enabled else [])
                     with mock.patch.object(sys, 'argv', arguments), \
                             mock.patch.dict(os.environ, {'PATH': '/tools'}, clear=True), \
+                            mock.patch('platform.system', return_value='Windows'), \
                             mock.patch('shutil.which', return_value='/tools/flutter'), \
                             mock.patch('subprocess.run') as run:
                         runpy.run_path(str(script), run_name='__main__')

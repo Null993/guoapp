@@ -5,9 +5,193 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"errors"
+	"io"
+	"net/http"
 	"sort"
+	"sync"
 	"time"
 )
+
+const (
+	routeLatencyTTL       = 30 * time.Minute
+	routeProbeTimeout     = 3 * time.Second
+	routeProbeBudget      = 900 * time.Millisecond
+	routeProbeConcurrency = 4
+	routeProbeBytes       = 1024
+	routeLatencyMaxEntry  = 512
+)
+
+type routeLatencyEntry struct {
+	rtt      time.Duration
+	measured time.Time
+}
+
+func nativeRouteKey(media providerMedia) string {
+	return media.URL + "\x00" + media.Referer
+}
+
+func (engine *nativeEngine) routeLatency(key string) (time.Duration, bool) {
+	if engine == nil || key == "" {
+		return 0, false
+	}
+	engine.routeLatencyMu.Lock()
+	defer engine.routeLatencyMu.Unlock()
+	entry, ok := engine.routeLatencies[key]
+	if !ok || entry.rtt <= 0 || time.Since(entry.measured) > routeLatencyTTL {
+		return 0, false
+	}
+	return entry.rtt, true
+}
+
+func (engine *nativeEngine) recordRouteLatency(key string, rtt time.Duration) {
+	if engine == nil || key == "" || rtt <= 0 {
+		return
+	}
+	engine.routeLatencyMu.Lock()
+	defer engine.routeLatencyMu.Unlock()
+	if engine.routeLatencies == nil {
+		engine.routeLatencies = map[string]routeLatencyEntry{}
+	}
+	if previous, ok := engine.routeLatencies[key]; ok && previous.rtt > 0 && time.Since(previous.measured) <= routeLatencyTTL {
+		rtt = (previous.rtt*2 + rtt) / 3
+	}
+	engine.routeLatencies[key] = routeLatencyEntry{rtt: rtt, measured: time.Now()}
+	if len(engine.routeLatencies) > routeLatencyMaxEntry {
+		oldest := key
+		for candidate, entry := range engine.routeLatencies {
+			if entry.measured.Before(engine.routeLatencies[oldest].measured) {
+				oldest = candidate
+			}
+		}
+		delete(engine.routeLatencies, oldest)
+	}
+
+}
+
+func (engine *nativeEngine) measureRoute(ctx context.Context, media providerMedia, timeout time.Duration) time.Duration {
+	if engine == nil || engine.downloader == nil || !isProviderHTTPMediaURL(media.URL) {
+		return 0
+	}
+	probeCtx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+	request, err := http.NewRequestWithContext(probeCtx, http.MethodGet, media.URL, nil)
+	if err != nil {
+		return 0
+	}
+	mediaRequestHeaders(request, media.Referer)
+	request.Header.Set("Range", "bytes=0-1023")
+	if media.credentials != nil {
+		if err := media.credentials.apply(request); err != nil {
+			return 0
+		}
+	}
+	client := *engine.downloader.client
+	client.Timeout = timeout
+	client.Jar = nil
+	start := time.Now()
+	response, err := client.Do(request)
+	if err != nil {
+		return 0
+	}
+	defer response.Body.Close()
+	_, readErr := io.Copy(io.Discard, io.LimitReader(response.Body, routeProbeBytes))
+	if readErr != nil {
+		return 0
+	}
+	elapsed := time.Since(start)
+	if response.StatusCode != http.StatusOK && response.StatusCode != http.StatusPartialContent {
+		return 0
+	}
+	return elapsed
+}
+
+func (engine *nativeEngine) probeRoutes(ctx context.Context, choice nativePlaybackChoice, budget time.Duration) {
+	if engine == nil || len(choice.media) < 2 || budget <= 0 {
+		return
+	}
+	quality := choice.media[0].Quality
+	jobs := make(chan providerMedia, min(len(choice.media), 32))
+	seen := map[string]bool{}
+	for _, media := range choice.media {
+		if media.Quality != quality {
+			continue
+		}
+		key := nativeRouteKey(media)
+		if seen[key] {
+			continue
+		}
+		if _, ok := engine.routeLatency(key); ok {
+			continue
+		}
+		seen[key] = true
+		jobs <- media
+		if len(jobs) == cap(jobs) {
+			break
+		}
+	}
+	close(jobs)
+	if len(jobs) == 0 {
+		return
+	}
+	work, cancel := context.WithTimeout(ctx, budget)
+	defer cancel()
+	var workers sync.WaitGroup
+	workerCount := min(routeProbeConcurrency, len(jobs))
+	for worker := 0; worker < workerCount; worker++ {
+		workers.Add(1)
+		go func() {
+			defer workers.Done()
+			for media := range jobs {
+				if work.Err() != nil {
+					return
+				}
+				if rtt := engine.measureRoute(work, media, routeProbeTimeout); rtt > 0 {
+					engine.recordRouteLatency(nativeRouteKey(media), rtt)
+				}
+			}
+		}()
+	}
+	workers.Wait()
+}
+
+func (engine *nativeEngine) nativeRankRoutes(choice *nativePlaybackChoice) {
+	if engine == nil || choice == nil || len(choice.media) < 2 {
+		return
+	}
+	latency := make([]time.Duration, len(choice.media))
+	known := false
+	for index, media := range choice.media {
+		if value, ok := engine.routeLatency(nativeRouteKey(media)); ok {
+			latency[index] = value
+			known = true
+		} else {
+			latency[index] = 0
+		}
+	}
+	if !known {
+		return
+	}
+	order := make([]int, len(choice.media))
+	for index := range order {
+		order[index] = index
+	}
+	sort.SliceStable(order, func(i, j int) bool {
+		left, right := choice.media[order[i]], choice.media[order[j]]
+		if left.Quality != right.Quality {
+			return left.Quality > right.Quality
+		}
+		leftLatency, rightLatency := latency[order[i]], latency[order[j]]
+		if leftLatency == 0 || rightLatency == 0 {
+			return leftLatency > 0 && rightLatency == 0
+		}
+		return leftLatency < rightLatency
+	})
+	ranked := make([]providerMedia, 0, len(choice.media))
+	for _, index := range order {
+		ranked = append(ranked, choice.media[index])
+	}
+	choice.media = ranked
+}
 
 type nativePlaybackChoice struct {
 	danmakuSeries string
@@ -141,6 +325,22 @@ func (engine *nativeEngine) nativeNextPlayback(ctx context.Context, session stri
 		return nativePlan{}, errors.New("播放线路已失效，请重新解析播放")
 	}
 	choice.index++
+	if choice.index < len(choice.media) {
+		best, bestLatency := choice.index, time.Duration(0)
+		if value, ok := engine.routeLatency(nativeRouteKey(choice.media[best])); ok {
+			bestLatency = value
+		}
+		for index := choice.index + 1; index < len(choice.media); index++ {
+			value, ok := engine.routeLatency(nativeRouteKey(choice.media[index]))
+			if !ok {
+				continue
+			}
+			if bestLatency <= 0 || value < bestLatency {
+				best, bestLatency = index, value
+			}
+		}
+		choice.index = best
+	}
 	return engine.nativeOpenPlayback(ctx, choice)
 }
 

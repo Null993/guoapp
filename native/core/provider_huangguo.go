@@ -393,6 +393,9 @@ func (d *Downloader) fetchProviderText(ctx context.Context, rawURL, referer stri
 			if len(candidates) > 1 {
 				timeout = 5 * time.Second
 			}
+			if providerSourceForURL(rawURL) == sourceHuangguoVideo {
+				timeout = 25 * time.Second
+			}
 			req, err := http.NewRequestWithContext(ctx, http.MethodGet, candidate, nil)
 			if err != nil {
 				return "", err

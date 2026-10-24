@@ -26,18 +26,20 @@ def main():
             archive.extractall(directory)
         media = directory / 'fixture.mp4'
         subprocess.run(['ffmpeg', '-v', 'error', '-y', '-f', 'lavfi',
-                        '-i', 'testsrc2=size=160x90:rate=12', '-t', '3',
+                        '-i', 'testsrc2=size=1080x1920:rate=12', '-t', '3',
                         '-c:v', 'libx264', '-threads', '1', str(media)], check=True)
         report = directory / 'result.json'
-        subprocess.run([str(directory / (variant.slug + '.exe')), '--package-smoke', str(report), str(media)],
-                       cwd=directory, check=True, timeout=90)
-        evidence = json.loads(report.read_text(encoding='utf-8'))
-        if evidence.get('ok') is not True:
-            raise SystemExit('Windows 包启动验收未通过。')
+        completed = subprocess.run([str(directory / (variant.slug + '.exe')), '--package-smoke', str(report), str(media)],
+                                   cwd=directory, check=False, timeout=90)
+        evidence = json.loads(report.read_text(encoding='utf-8')) if report.exists() else {
+            'ok': False, 'error': '程序未生成冒烟报告', 'exitCode': completed.returncode,
+        }
         output = root / 'build' / 'windows-package-smoke.json'
         output.parent.mkdir(parents=True, exist_ok=True)
         output.write_text(json.dumps(evidence, indent=2) + '\n', encoding='utf-8')
         print(json.dumps(evidence))
+        if completed.returncode != 0 or evidence.get('ok') is not True:
+            raise SystemExit('Windows 包启动验收未通过，详情：' + str(output))
 
 
 if __name__ == '__main__':

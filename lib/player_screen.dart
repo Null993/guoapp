@@ -14,7 +14,6 @@ import 'app_orientation.dart';
 import 'app_theme.dart';
 import 'core_bridge.dart';
 import 'diary_service.dart';
-import 'luna_exo_player.dart';
 import 'danmaku_controller.dart';
 import 'danmaku_overlay.dart';
 import 'download_picker.dart';
@@ -26,6 +25,7 @@ import 'playback_loader.dart';
 import 'playback_preloader.dart';
 import 'playback_recovery.dart';
 import 'playback_preferences.dart';
+import 'playback_video_configuration.dart';
 import 'player_controls.dart';
 import 'remote_widgets.dart';
 import 'player_interactions.dart';
@@ -117,6 +117,7 @@ class _PlayerScreenState extends State<PlayerScreen>
   bool _acceptErrors = false;
   bool _foreground = true;
   bool _playIntent = true;
+  bool _keepScreenOn = false;
   bool _showControlsOnPlaybackReady = true;
   bool _pendingError = false;
   bool _pictureInPictureSupported = false;
@@ -124,6 +125,7 @@ class _PlayerScreenState extends State<PlayerScreen>
   bool _pictureInPictureRequested = false;
   bool _pictureInPictureHandlerInstalled = false;
   AppLifecycleState _lifecycleState = AppLifecycleState.resumed;
+  Timer? _hardwareDecodeWatch;
   String _loadingMessage = '正在准备播放';
   String? _error;
   String? _saveWarning;
@@ -131,16 +133,13 @@ class _PlayerScreenState extends State<PlayerScreen>
   PlaybackPlan? _plan;
   double _speed = 1;
   double _aspectRatio = 9 / 16;
+  String _fitType = 'contain';
   double _resumePosition = 0;
   bool _rotating = false;
   bool _television = false;
   AppOrientationController? _orientationController;
   bool get _pictureInPictureVisible =>
       _pictureInPictureActive || _pictureInPictureRequested;
-  bool get _canUsePictureInPicture =>
-      !_television &&
-      defaultTargetPlatform == TargetPlatform.android &&
-      _pictureInPictureSupported;
   bool get _mobile =>
       !_television &&
       (defaultTargetPlatform == TargetPlatform.android ||
@@ -154,12 +153,29 @@ class _PlayerScreenState extends State<PlayerScreen>
     danmaku: _danmakuEnabled,
     preload: _preloadEnabled,
     enhancement: _enhancement.preferences,
+    fitType: _fitType,
+    slideVolumeBrightness:
+        widget.store.playbackPreferences.slideVolumeBrightness,
+    slideFullscreen: widget.store.playbackPreferences.slideFullscreen,
+    quickDoubleTap: widget.store.playbackPreferences.quickDoubleTap,
+    doubleTapSeekSeconds: widget.store.playbackPreferences.doubleTapSeekSeconds,
+    dragSeekSeconds: widget.store.playbackPreferences.dragSeekSeconds,
+    gestureSchema: widget.store.playbackPreferences.gestureSchema,
+    longPressSpeed: widget.store.playbackPreferences.longPressSpeed,
+    autoLongPressSpeed: widget.store.playbackPreferences.autoLongPressSpeed,
   );
   String get _qualityLabel => _plan?.local == true
       ? '本地原画'
       : _requestedQuality == 0
       ? '自动'
       : '${_requestedQuality}P';
+  BoxFit get _videoFit => switch (_fitType) {
+    'cover' => BoxFit.cover,
+    'fill' => BoxFit.fill,
+    'fitWidth' => BoxFit.fitWidth,
+    'fitHeight' => BoxFit.fitHeight,
+    _ => BoxFit.contain,
+  };
   String get _session => _plan?.session ?? '';
   double get _currentPosition =>
       _openedIndex == _index && _player.state.position.inMilliseconds > 0
@@ -175,6 +191,7 @@ class _PlayerScreenState extends State<PlayerScreen>
     final preferences = widget.store.playbackPreferences;
     _speed = preferences.speed;
     _requestedQuality = preferences.quality;
+    _fitType = preferences.fitType;
     _autoAdvance = true;
     _danmakuEnabled = preferences.danmaku;
     _preloadEnabled = true;
@@ -185,21 +202,14 @@ class _PlayerScreenState extends State<PlayerScreen>
     widget.store.addListener(_accessChanged);
     _player =
         widget.playerFactory?.call() ??
-        (Platform.isAndroid
-            ? LunaExoPlayer()
-            : Player(
-                configuration: const PlayerConfiguration(
-                  bufferSize: 32 * 1024 * 1024,
-                  logLevel: MPVLogLevel.error,
-                ),
-              ));
-    _video = widget.videoBuilder == null && !Platform.isAndroid
-        ? VideoController(
-            _player,
-            configuration: VideoControllerConfiguration(
-              enableHardwareAcceleration: !Platform.isIOS,
-            ),
-          )
+        Player(
+          configuration: const PlayerConfiguration(
+            bufferSize: 32 * 1024 * 1024,
+            logLevel: MPVLogLevel.error,
+          ),
+        );
+    _video = widget.videoBuilder == null
+        ? VideoController(_player, configuration: playbackVideoConfiguration())
         : null;
     _enhancement = VideoEnhancementController(
       player: _player,
@@ -220,7 +230,21 @@ class _PlayerScreenState extends State<PlayerScreen>
       baseSpeed: () => _speed,
       onTogglePlayback: _togglePlayback,
       onSeek: _seekTo,
-      onFullscreen: _rotate,
+      onFullscreen: (enter) {
+        if (enter == _showFullscreen) return;
+        _rotate();
+      },
+      options: PlayerGestureOptions(
+        slideVolumeBrightness:
+            widget.store.playbackPreferences.slideVolumeBrightness,
+        slideFullscreen: widget.store.playbackPreferences.slideFullscreen,
+        quickDoubleTap: widget.store.playbackPreferences.quickDoubleTap,
+        doubleTapSeekSeconds:
+            widget.store.playbackPreferences.doubleTapSeekSeconds,
+        dragSeekSeconds: widget.store.playbackPreferences.dragSeekSeconds,
+        longPressSpeed: widget.store.playbackPreferences.longPressSpeed,
+        autoLongPressSpeed: widget.store.playbackPreferences.autoLongPressSpeed,
+      ),
       onEpisode: (direction) {
         final next = _index + direction;
         if (next < 0) return '已经是第一集';
@@ -293,6 +317,7 @@ class _PlayerScreenState extends State<PlayerScreen>
     ]) {
       _subscriptions.add(
         stream.listen((_) {
+          _syncKeepScreenOn();
           _syncDanmaku();
           _syncPreload();
           _acknowledgeHandoff();
@@ -485,84 +510,40 @@ class _PlayerScreenState extends State<PlayerScreen>
     }
   }
 
-  Future<void> _enterPictureInPicture() async {
-    if (!_canUsePictureInPicture ||
-        _closed ||
-        _loading ||
-        _error != null ||
-        _panelOpen) {
-      return;
-    }
-    _interactions.cancel();
-    final rawRatio = _aspectRatio.isFinite && _aspectRatio > 0
-        ? _aspectRatio
-        : 16 / 9;
-    final ratio = rawRatio.clamp(1 / 2.39, 2.39).toDouble();
-    final width = ratio >= 1 ? (1000 * ratio).round() : 1000;
-    final height = ratio >= 1 ? 1000 : (1000 / ratio).round();
-    _setPictureInPictureStatus(requested: true);
-    await WidgetsBinding.instance.endOfFrame;
-    if (!mounted || _closed) return;
-    final sourceRect = _pictureInPictureSourceRect();
-    final arguments = <String, int>{'width': width, 'height': height};
-    if (sourceRect != null) arguments.addAll(sourceRect);
-    try {
-      final status = await AppDevice.channel.invokeMapMethod<String, dynamic>(
-        'enterPictureInPicture',
-        arguments,
-      );
-      if (!mounted || _closed) return;
-      final supported = status?['supported'] == true;
-      final active = status?['active'] == true;
-      final requested = status?['requested'] == true;
-      _setPictureInPictureStatus(
-        supported: supported,
-        active: active,
-        requested: requested && !active,
-      );
-      if (!supported || (!active && !requested)) {
-        _notice('当前设备不支持画中画');
-      } else if (requested && !active) {
-        _pictureInPictureExitTimer?.cancel();
-        _pictureInPictureExitTimer = Timer(const Duration(seconds: 2), () {
+  void _watchHardwareDecode() {
+    _hardwareDecodeWatch?.cancel();
+    if (!Platform.isAndroid || _television) return;
+    final generation = _generation;
+    _hardwareDecodeWatch = Timer(const Duration(seconds: 8), () async {
+      if (_closed ||
+          !_foreground ||
+          generation != _generation ||
+          widget.store.locked ||
+          widget.store.profileEpoch != _profileEpoch ||
+          !widget.store.allowsSource(widget.detail.drama.source))
+        return;
+      final state = _player.state;
+      if (!state.playing || state.position <= Duration.zero) return;
+      if ((state.width ?? 0) > 0 && (state.height ?? 0) > 0) return;
+      final platform = _player.platform;
+      if (platform is! NativePlayer) return;
+      DiaryService.add('[Play] 硬解 8 秒无画面，回退软件解码');
+      try {
+        await _serialize(() async {
+          if (_closed || generation != _generation) return;
+          await platform.setProperty('hwdec', 'no');
+          if (_closed || generation != _generation) return;
+          await _player.seek(state.position);
           if (!_closed &&
-              _pictureInPictureRequested &&
-              !_pictureInPictureActive) {
-            _setPictureInPictureStatus(requested: false);
-          }
+              generation == _generation &&
+              _playIntent &&
+              _foreground &&
+              !widget.store.locked &&
+              widget.store.allowsSource(widget.detail.drama.source))
+            await _player.play();
         });
-      }
-    } on PlatformException {
-      _setPictureInPictureStatus(requested: false);
-      _notice('无法进入画中画，请检查系统权限');
-    } on MissingPluginException {
-      _setPictureInPictureStatus(supported: false, requested: false);
-      _notice('当前平台不支持画中画');
-    }
-  }
-
-  Map<String, int>? _pictureInPictureSourceRect() {
-    final paneContext = _videoPaneKey.currentContext;
-    final renderObject = paneContext?.findRenderObject();
-    if (paneContext == null ||
-        renderObject is! RenderBox ||
-        !renderObject.hasSize) {
-      return null;
-    }
-    final topLeft = renderObject.localToGlobal(Offset.zero);
-    final size = renderObject.size;
-    final ratio =
-        MediaQuery.maybeOf(paneContext)?.devicePixelRatio ??
-        View.of(paneContext).devicePixelRatio;
-    final left = (topLeft.dx * ratio).round().clamp(0, 100000);
-    final top = (topLeft.dy * ratio).round().clamp(0, 100000);
-    final right = ((topLeft.dx + size.width) * ratio).round().clamp(0, 100000);
-    final bottom = ((topLeft.dy + size.height) * ratio).round().clamp(
-      0,
-      100000,
-    );
-    if (right <= left || bottom <= top) return null;
-    return {'left': left, 'top': top, 'right': right, 'bottom': bottom};
+      } catch (_) {}
+    });
   }
 
   void _attachLanPlayback() {
@@ -697,7 +678,7 @@ class _PlayerScreenState extends State<PlayerScreen>
     final position = state.position.inMilliseconds;
     if (duration <= 0 ||
         position < 2000 ||
-        (position < duration ~/ 2 && duration - position > 45000) ||
+        (position < (duration * 0.4).round() && duration - position > 60000) ||
         state.buffer.inMilliseconds - position < 5000) {
       return;
     }
@@ -735,6 +716,7 @@ class _PlayerScreenState extends State<PlayerScreen>
     final television = AppLayout.isTelevision(context);
     if (_television != television) {
       _fullscreen = false;
+      _interactions.fullscreen = false;
       _automaticFullscreenSuppressed = false;
       _interactions.cancel();
     }
@@ -761,6 +743,14 @@ class _PlayerScreenState extends State<PlayerScreen>
         ),
       );
     });
+  }
+
+  void _syncKeepScreenOn() {
+    if (defaultTargetPlatform != TargetPlatform.android) return;
+    final keepOn = !_closed && _player.state.playing;
+    if (keepOn == _keepScreenOn) return;
+    _keepScreenOn = keepOn;
+    unawaited(AppDevice.setKeepScreenOn(keepOn));
   }
 
   @override
@@ -1118,7 +1108,7 @@ class _PlayerScreenState extends State<PlayerScreen>
               );
               await platform.setProperty('demuxer-readahead-secs', '5');
             } else {
-              await platform.setProperty('hwdec', 'auto-safe');
+              await platform.setProperty('hwdec', 'mediacodec-copy');
               await platform.setProperty('hwdec-codecs', 'all');
               await platform.setProperty('vd-lavc-skiploopfilter', 'nonkey');
               await platform.setProperty('vd-lavc-threads', '4');
@@ -1167,6 +1157,7 @@ class _PlayerScreenState extends State<PlayerScreen>
           return;
         }
         _openedIndex = index;
+        _watchHardwareDecode();
         _enhancement.mediaReady();
         _attachLanPlayback();
         _health.reset();
@@ -1260,6 +1251,7 @@ class _PlayerScreenState extends State<PlayerScreen>
     _rotating = true;
     setState(() {
       _fullscreen = fullscreen;
+      _interactions.fullscreen = fullscreen;
       _automaticFullscreenSuppressed = !fullscreen;
     });
     try {
@@ -1283,6 +1275,7 @@ class _PlayerScreenState extends State<PlayerScreen>
       if (mounted && !_closed) {
         setState(() {
           _fullscreen = previous;
+          _interactions.fullscreen = previous;
           _automaticFullscreenSuppressed = previousSuppressed;
         });
         _notice('无法切换全屏，请重试');
@@ -1314,9 +1307,22 @@ class _PlayerScreenState extends State<PlayerScreen>
       return;
     final qualityChanged = nextPreferences.quality != _requestedQuality;
     _enhancement.setPreferences(nextPreferences.enhancement);
+    final stored = widget.store.playbackPreferences;
+    _interactions.updateOptions(
+      PlayerGestureOptions(
+        slideVolumeBrightness: stored.slideVolumeBrightness,
+        slideFullscreen: stored.slideFullscreen,
+        quickDoubleTap: stored.quickDoubleTap,
+        doubleTapSeekSeconds: stored.doubleTapSeekSeconds,
+        dragSeekSeconds: stored.dragSeekSeconds,
+        longPressSpeed: stored.longPressSpeed,
+        autoLongPressSpeed: stored.autoLongPressSpeed,
+      ),
+    );
     setState(() {
       _speed = nextPreferences.speed;
       _requestedQuality = nextPreferences.quality;
+      _fitType = nextPreferences.fitType;
       _autoAdvance = true;
       _danmakuEnabled = nextPreferences.danmaku;
       _preloadEnabled = true;
@@ -1566,6 +1572,10 @@ class _PlayerScreenState extends State<PlayerScreen>
   @override
   void dispose() {
     _closed = true;
+    if (_keepScreenOn) {
+      _keepScreenOn = false;
+      unawaited(AppDevice.setKeepScreenOn(false));
+    }
     final enhancementClosed = _enhancement.close();
     LanController.current?.detachPlayback(_lanIdentity);
     widget.handoff?.fail('接收端已退出播放');
@@ -1578,6 +1588,7 @@ class _PlayerScreenState extends State<PlayerScreen>
     _healthTimer?.cancel();
     _errorTimer?.cancel();
     _pictureInPictureExitTimer?.cancel();
+    _hardwareDecodeWatch?.cancel();
     if (_pictureInPictureHandlerInstalled) {
       AppDevice.channel.setMethodCallHandler(null);
     }
@@ -1807,13 +1818,24 @@ class _PlayerScreenState extends State<PlayerScreen>
                 ? _retryDanmakuFromControls
                 : null,
             onPush: widget.mediaId == null ? _pushToDevice : null,
-            onPictureInPicture: _canUsePictureInPicture
-                ? _enterPictureInPicture
-                : null,
             onPrevious: _index > 0 ? () => _play(_index - 1) : null,
             onNext: _index + 1 < widget.detail.episodes.length
                 ? () => _play(_index + 1)
                 : null,
+            gestureOptions: PlayerGestureOptions(
+              slideVolumeBrightness:
+                  widget.store.playbackPreferences.slideVolumeBrightness,
+              slideFullscreen: widget.store.playbackPreferences.slideFullscreen,
+              quickDoubleTap: widget.store.playbackPreferences.quickDoubleTap,
+              doubleTapSeekSeconds:
+                  widget.store.playbackPreferences.doubleTapSeekSeconds,
+              dragSeekSeconds: widget.store.playbackPreferences.dragSeekSeconds,
+              longPressSpeed: widget.store.playbackPreferences.longPressSpeed,
+              autoLongPressSpeed:
+                  widget.store.playbackPreferences.autoLongPressSpeed,
+            ),
+            fitType: _fitType,
+            onFitType: () => _openPanel(PlayerMenuSection.fit),
           );
     final layeredControls = Stack(
       fit: StackFit.expand,
@@ -1843,16 +1865,10 @@ class _PlayerScreenState extends State<PlayerScreen>
             children: [
               if (widget.videoBuilder != null)
                 widget.videoBuilder!(layeredControls)
-              else if (_player is LunaExoPlayer)
-                LunaExoVideoView(
-                  player: _player as LunaExoPlayer,
-                  fit: BoxFit.contain,
-                  controls: (_) => layeredControls,
-                )
               else
                 Video(
                   controller: _video!,
-                  fit: BoxFit.contain,
+                  fit: _videoFit,
                   controls: (_) => layeredControls,
                 ),
               if (_loading && !hideOverlayForPictureInPicture)

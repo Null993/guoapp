@@ -14,7 +14,7 @@ def mirrored_pub_lockfile(root, environment):
         return
     lockfile = Path(root) / 'pubspec.lock'
     original = lockfile.read_bytes()
-    rewritten = re.sub(r'(?m)^([ \t]+url:[ \t]*)"?https://pub\.(?:dev|dartlang\.org)/?"?([ \t]*)$',
+    rewritten = re.sub(r'(?m)^([ \t]+url:[ \t]*)"?https://pub\.(?:dev|dartlang\.org)/?"?([ \t]*\r?)$',
                        lambda match: match[1] + json.dumps(mirror) + match[2],
                        original.decode('utf-8')).encode('utf-8')
     if rewritten == original:
@@ -31,10 +31,16 @@ def mirrored_pub_lockfile(root, environment):
         lockfile.write_bytes(rewritten)
         yield
     finally:
-        if lockfile.read_bytes() != rewritten:
+        current = lockfile.read_bytes()
+        if _normalize_pub_host(current) != _normalize_pub_host(rewritten):
             raise RuntimeError('构建期间锁文件发生变化，未覆盖；原文件保存在 ' + str(backup))
         lockfile.write_bytes(original)
         backup.unlink()
+
+
+def _normalize_pub_host(content):
+    return re.sub(rb'https://pub\.(?:dev|dartlang\.org)|https://pub\.flutter-io\.cn',
+                  b'https://pub.host', content)
 
 
 @contextmanager
