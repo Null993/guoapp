@@ -11,9 +11,10 @@ import (
 )
 
 type hongguoDetailEntry struct {
-	Drama     Drama
-	Chapters  []Chapter
-	ExpiresAt time.Time
+	countConfirmed bool
+	Drama          Drama
+	Chapters       []Chapter
+	ExpiresAt      time.Time
 }
 
 type hongguoDetailCall struct {
@@ -121,6 +122,9 @@ func (downloader *Downloader) hongguoCachedDrama(drama Drama) Drama {
 	client.mu.Lock()
 	defer client.mu.Unlock()
 	if cached, found := client.details[seriesID]; found && time.Now().Before(cached.ExpiresAt) {
+		return mergeDramaMetadata(cached.Drama, drama)
+	}
+	if cached, found := client.webDetails[seriesID]; found && time.Now().Before(cached.ExpiresAt) {
 		return mergeDramaMetadata(cached.Drama, drama)
 	}
 	return drama

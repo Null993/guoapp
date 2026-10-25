@@ -83,6 +83,9 @@ func (engine *nativeEngine) nativeRanking(ctx context.Context, input nativeInput
 	}
 	for _, row := range page.Items {
 		drama := nativeNormalize(row.Drama)
+		if board.Source == sourceHongguo {
+			drama.Episodes = 0
+		}
 		if old, found := library[drama.ID]; found {
 			drama = mergeNativeDrama(old, drama)
 		}

@@ -36,6 +36,12 @@ class _RankingsScreenState extends State<RankingsScreen> {
   bool _failedMore = false;
   int _page = 1;
   int _generation = 0;
+  int _countGeneration = 0;
+  int _countWorkers = 0;
+  final _countQueue = <String, Drama>{};
+  final _countActive = <String>{};
+  final _verifiedCounts = <String>{};
+  final _countErrors = <String, String>{};
   String? _error;
   String _updated = '';
 
@@ -51,6 +57,8 @@ class _RankingsScreenState extends State<RankingsScreen> {
   void dispose() {
     widget.repository.catalogUpdates.removeListener(_metadataChanged);
     _generation++;
+    _countGeneration++;
+    _countQueue.clear();
     _scroll.removeListener(_onScroll);
     _scroll.dispose();
     super.dispose();
@@ -106,6 +114,11 @@ class _RankingsScreenState extends State<RankingsScreen> {
     final board = _board;
     if (board == null || more && (_loading || _more || !_hasMore)) return;
     final generation = ++_generation;
+    if (!more) {
+      _countGeneration++;
+      _countQueue.clear();
+      _countErrors.clear();
+    }
     setState(() {
       _loading = !more;
       _more = more;
@@ -133,7 +146,7 @@ class _RankingsScreenState extends State<RankingsScreen> {
         _loading = false;
         _more = false;
       });
-      unawaited(_supplementCounts(generation, result.items));
+      _queueCounts(result.items);
     } catch (error) {
       if (mounted && generation == _generation) {
         setState(() {
@@ -146,31 +159,71 @@ class _RankingsScreenState extends State<RankingsScreen> {
     }
   }
 
-  Future<void> _supplementCounts(
-    int generation,
-    List<RankingItem> items,
-  ) async {
-    final pending = items
-        .where(
-          (item) => item.drama.source == 'hongguo' && item.drama.episodes <= 3,
-        )
-        .iterator;
-    Future<void> worker() async {
-      while (mounted && generation == _generation && pending.moveNext()) {
-        final drama = pending.current.drama;
-        if (!widget.store.allowsSource(drama.source)) return;
+  void _queueCounts(Iterable<RankingItem> items, {bool retry = false}) {
+    if (!mounted || widget.store.locked) return;
+    for (final item in items) {
+      final drama = widget.repository.catalogUpdates.current(item.drama);
+      if (!widget.store.allowsSource(drama.source) ||
+          drama.source != 'hongguo' ||
+          drama.episodes > 3 ||
+          _verifiedCounts.contains(drama.id) ||
+          _countActive.contains(drama.id)) {
+        continue;
+      }
+      if (!retry && _countErrors.containsKey(drama.id)) continue;
+      _countErrors.remove(drama.id);
+      _countQueue[drama.id] = drama;
+    }
+    _startCountWorkers();
+  }
+
+  void _startCountWorkers() {
+    while (mounted && _countWorkers < 2 && _countQueue.isNotEmpty) {
+      _countWorkers++;
+      unawaited(_countWorker());
+    }
+  }
+
+  Future<void> _countWorker() async {
+    try {
+      while (mounted && _countQueue.isNotEmpty) {
+        final id = _countQueue.keys.first;
+        final drama = _countQueue.remove(id)!;
+        final generation = _countGeneration;
+        final epoch = widget.store.profileEpoch;
+        _countActive.add(id);
         try {
+          if (!widget.store.allowsSource(drama.source)) continue;
           final fresh = await widget.repository.supplementMetadata(drama);
-          if (!mounted || generation != _generation) return;
-          if (fresh != null && widget.store.allowsSource(fresh.source)) {
-            widget.repository.catalogUpdates.publish(fresh);
-            await widget.store.refreshDrama(fresh);
+          if (!mounted ||
+              generation != _countGeneration ||
+              epoch != widget.store.profileEpoch) {
+            continue;
           }
-        } catch (_) {}
+          if (fresh == null || fresh.episodes <= 0) {
+            throw AppFailure('暂未取得可靠集数');
+          }
+          if (!widget.store.allowsSource(fresh.source)) continue;
+          _verifiedCounts.add(id);
+          widget.repository.catalogUpdates.publish(fresh);
+          await widget.store.refreshDrama(fresh);
+        } catch (error) {
+          if (mounted &&
+              generation == _countGeneration &&
+              epoch == widget.store.profileEpoch) {
+            _countErrors[id] = error.toString();
+          }
+        } finally {
+          _countActive.remove(id);
+          if (mounted) setState(() {});
+        }
+      }
+    } finally {
+      _countWorkers--;
+      if (mounted) {
+        _queueCounts(_items);
       }
     }
-
-    await Future.wait([worker(), worker()]);
   }
 
   void _select(RankingBoard board) {
@@ -269,6 +322,22 @@ class _RankingsScreenState extends State<RankingsScreen> {
                     ].join(' '),
                     style: Theme.of(context).textTheme.bodySmall,
                   ),
+                ),
+              ),
+            if (_countErrors.isNotEmpty)
+              Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 16),
+                child: Row(
+                  children: [
+                    Expanded(
+                      child: Text('${_countErrors.length} 部作品的集数暂未确认，列表仍可使用'),
+                    ),
+                    TextButton(
+                      onPressed: () =>
+                          setState(() => _queueCounts(_items, retry: true)),
+                      child: const Text('重试集数'),
+                    ),
+                  ],
                 ),
               ),
             if (_loading && items.isNotEmpty)
@@ -395,6 +464,14 @@ class _RankingsScreenState extends State<RankingsScreen> {
                                       height: 108,
                                       child: DramaCover(
                                         drama: item.drama,
+                                        episodeLabel:
+                                            item.drama.source == 'hongguo' &&
+                                                item.drama.episodes <= 3 &&
+                                                !_verifiedCounts.contains(
+                                                  item.drama.id,
+                                                )
+                                            ? '集数待确认'
+                                            : null,
                                         repository: widget.repository,
                                         radius: 8,
                                       ),

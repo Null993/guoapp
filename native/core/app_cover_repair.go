@@ -3,6 +3,7 @@ package core
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"os"
 	"strings"
@@ -29,7 +30,10 @@ func (cache *nativeCoverCache) load(ctx context.Context, drama nativeDrama, forc
 		return path, err
 	}
 	address, repairErr := cache.repair(ctx, drama, force)
-	if repairErr != nil || address == "" || address == drama.Cover {
+	if repairErr != nil {
+		return "", errors.Join(err, fmt.Errorf("刷新海报地址失败: %w", repairErr))
+	}
+	if address == "" || address == drama.Cover {
 		return "", err
 	}
 	drama.Cover = address
@@ -68,7 +72,11 @@ func (cache *nativeCoverCache) repair(ctx context.Context, drama nativeDrama, fo
 	call := &nativeCoverRepair{done: make(chan struct{})}
 	cache.repairs[drama.ID] = call
 	cache.mu.Unlock()
-	work, cancel := context.WithTimeout(ctx, 15*time.Second)
+	budget := 15 * time.Second
+	if sourceFromDramaID(drama.ID) == sourceHuangguoVideo {
+		budget = 30 * time.Second
+	}
+	work, cancel := context.WithTimeout(ctx, budget)
 	defer cancel()
 	var address string
 	var err error
@@ -80,7 +88,11 @@ func (cache *nativeCoverCache) repair(ctx context.Context, drama nativeDrama, fo
 		err = work.Err()
 	}
 	cache.mu.Lock()
-	call.address, call.err, call.retryAt = address, err, time.Now().Add(5*time.Minute)
+	retryDelay := 5 * time.Minute
+	if err != nil && (automaticNetworkFailure(err) || errors.Is(err, context.Canceled)) {
+		retryDelay = 10 * time.Second
+	}
+	call.address, call.err, call.retryAt = address, err, time.Now().Add(retryDelay)
 	close(call.done)
 	cache.mu.Unlock()
 	return address, err

@@ -5,6 +5,7 @@ import 'dart:io';
 import 'dart:isolate';
 
 import 'package:ffi/ffi.dart';
+import 'package:crypto/crypto.dart';
 import 'package:path/path.dart' as path;
 import 'package:path_provider/path_provider.dart';
 
@@ -95,6 +96,7 @@ abstract class AppRepository {
     required int startMs,
     required int durationMs,
   }) async => throw AppFailure('当前环境不支持弹幕');
+  Future<void> cancelDetail(Drama drama) async {}
   Future<void> cancelCatalog() async {}
   Future<void> cancelSuggestions() async {}
   Future<void> cancelRecommendations() async {}
@@ -311,9 +313,11 @@ class NativeRepository extends AppRepository {
     }
   }
 
-  Future<void> _cancelReads(String prefix) async {
+  Future<void> _cancelReads(String prefix, {bool exact = false}) async {
     final reads = _activeReads.entries
-        .where((entry) => entry.key.startsWith(prefix))
+        .where(
+          (entry) => exact ? entry.key == prefix : entry.key.startsWith(prefix),
+        )
         .toList();
     await Future.wait(
       reads.map((entry) async {
@@ -834,10 +838,19 @@ class NativeRepository extends AppRepository {
     return converted;
   }
 
+  String _detailReadScope(Drama drama) =>
+      'detail-${sha256.convert(utf8.encode(drama.id))}';
+
   @override
   Future<DramaDetail> detail(Drama drama) async => DramaDetail.fromJson(
-    await _call({'action': 'detail', 'drama': drama.toJson()}),
+    await _read(_detailReadScope(drama), {
+      'action': 'detail',
+      'drama': drama.toJson(),
+    }),
   );
+  @override
+  Future<void> cancelDetail(Drama drama) =>
+      _cancelReads(_detailReadScope(drama), exact: true);
   @override
   Future<PlaybackPlan> resolve(
     Drama drama,

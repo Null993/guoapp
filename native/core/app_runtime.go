@@ -495,7 +495,7 @@ func nativeDispatch(input nativeInput) (any, error) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), duration)
 	defer cancel()
-	if input.Action == "danmaku" || input.Action == "preload" || input.Action == "prepareHandoff" || input.Session != "" && (input.Action == "catalog" || input.Action == "categories" || input.Action == "suggestions" || input.Action == "recommendations" || input.Action == "metadata") {
+	if input.Action == "danmaku" || input.Action == "preload" || input.Action == "prepareHandoff" || input.Session != "" && (input.Action == "catalog" || input.Action == "categories" || input.Action == "suggestions" || input.Action == "recommendations" || input.Action == "metadata" || input.Action == "detail") {
 		work, finish, err := engine.beginRead(ctx, input)
 		if err != nil {
 			return nil, err
@@ -921,6 +921,9 @@ func (engine *nativeEngine) nativeDetail(ctx context.Context, drama nativeDrama)
 		drama.Episodes = max(drama.Episodes, knownEpisodes, nativeNormalize(raw).Episodes)
 	}
 	warning := ""
+	if source == sourceHongguo && drama.Episodes > len(chapters) {
+		warning = fmt.Sprintf("站点当前返回 %d/%d 集，尚未取得完整分集，可稍后刷新详情", len(chapters), drama.Episodes)
+	}
 	if fetching, _ := ctx.Value(nativeMetadataFetchKey{}).(bool); fetching {
 		return map[string]any{"drama": drama, "chapters": chapters, "warning": warning}, nil
 	}

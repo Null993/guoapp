@@ -3,10 +3,11 @@ package core
 import (
 	"context"
 	"errors"
-	"net/url"
 	"strings"
 	"time"
 )
+
+type confirmHongguoCountKey struct{}
 
 func nativeNeedsExtraMetadata(drama nativeDrama) bool {
 	return drama.Source == sourceHongguo && (drama.OnlineDate == "" || drama.Episodes <= 3) ||
@@ -29,14 +30,16 @@ func (engine *nativeEngine) nativeExtraMetadata(ctx context.Context, drama nativ
 		if !hongguoNumericID.MatchString(id) {
 			return drama, errors.New("红果剧集 ID 无效")
 		}
-		body, err := engine.downloader.fetchProviderText(ctx, hongguoBaseURL+"/detail?series_id="+url.QueryEscape(id), hongguoBaseURL+"/")
+		entry, err := engine.downloader.hongguoWebDetail(ctx, id)
 		if err != nil {
 			return drama, err
 		}
-		raw, err = parseHongguoSortDetail(body, id)
-		if err != nil {
-			return drama, err
+		raw = entry.Drama
+		count := nativeNormalize(raw).Episodes
+		if required, _ := ctx.Value(confirmHongguoCountKey{}).(bool); required && count <= 3 && !entry.countConfirmed && (count > 0 || drama.Episodes > 0) {
+			return drama, errors.New("红果网页仅返回试看信息，暂时无法确认总集数")
 		}
+
 	case sourceHuangdou:
 		row, err := engine.downloader.huangdouDetail(ctx, id)
 		if err != nil {
@@ -66,6 +69,7 @@ func (engine *nativeEngine) nativeExtraMetadata(ctx context.Context, drama nativ
 }
 
 func (engine *nativeEngine) nativeMetadata(ctx context.Context, drama nativeDrama) (any, error) {
+	ctx = context.WithValue(ctx, confirmHongguoCountKey{}, drama.Source == sourceHongguo && drama.Episodes <= 3)
 	fresh, err := engine.nativeExtraMetadata(ctx, drama)
 	if err != nil {
 		return nil, err

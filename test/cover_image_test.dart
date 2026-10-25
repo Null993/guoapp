@@ -22,6 +22,16 @@ class CoverFixtureRepository extends FixtureRepository {
   }
 }
 
+class TransientCoverRepository extends FixtureRepository {
+  int calls = 0;
+  @override
+  Future<String> cover(Drama drama, {bool force = false}) async {
+    calls++;
+    if (calls == 1) throw AppFailure('合成网络超时');
+    return File('test/fixtures/cover.png').absolute.path;
+  }
+}
+
 void main() {
   test(
     'metadata cache evicts old entries without retaining cover revisions',
@@ -77,6 +87,43 @@ void main() {
     expect(tester.takeException(), isNull);
     await tester.pumpWidget(const SizedBox.shrink());
     scroll.dispose();
+  });
+
+  testWidgets('a transient cover failure retries once after idle delay', (
+    tester,
+  ) async {
+    final repository = TransientCoverRepository();
+    await tester.pumpWidget(
+      MaterialApp(
+        home: SizedBox(
+          width: 100,
+          height: 150,
+          child: CachedCoverImage(
+            drama: FixtureRepository.free,
+            repository: repository,
+            placeholder: const SizedBox(),
+          ),
+        ),
+      ),
+    );
+    await tester.runAsync(() async {
+      await precacheImage(
+        ResizeImage.resizeIfNeeded(
+          440,
+          null,
+          FileImage(File('test/fixtures/cover.png').absolute),
+        ),
+        tester.element(find.byType(CachedCoverImage)),
+      );
+    });
+    await tester.pumpAndSettle();
+    expect(repository.calls, 1);
+    expect(find.byTooltip('重试海报'), findsOneWidget);
+    await tester.pump(const Duration(seconds: 15));
+    await tester.pumpAndSettle();
+    expect(repository.calls, 2);
+    expect(find.byType(Image), findsOneWidget);
+    await tester.pumpWidget(const SizedBox.shrink());
   });
 
   testWidgets('failed cover can retry and render a decoded local file', (

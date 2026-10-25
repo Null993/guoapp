@@ -37,18 +37,21 @@ type hongguoCatalogState struct {
 }
 
 type hongguoAppClient struct {
-	mu             sync.Mutex
-	catalogMu      sync.Mutex
-	baseURL        string
-	state          hongguoCatalogState
-	details        map[string]hongguoDetailEntry
-	pending        map[string]*hongguoDetailCall
-	searches       map[string]hongguoSearchEntry
-	searchPending  map[string]*hongguoSearchCall
-	suggestions    map[string]hongguoSuggestionEntry
-	suggestPending map[string]*hongguoSuggestionCall
-	danmaku        map[string]hongguoDanmakuCacheEntry
-	danmakuPending map[string]*hongguoDanmakuCall
+	mu              sync.Mutex
+	catalogMu       sync.Mutex
+	baseURL         string
+	state           hongguoCatalogState
+	webDetails      map[string]hongguoDetailEntry
+	webPending      map[string]*hongguoDetailCall
+	playbackPending map[string]*hongguoDetailCall
+	details         map[string]hongguoDetailEntry
+	pending         map[string]*hongguoDetailCall
+	searches        map[string]hongguoSearchEntry
+	searchPending   map[string]*hongguoSearchCall
+	suggestions     map[string]hongguoSuggestionEntry
+	suggestPending  map[string]*hongguoSuggestionCall
+	danmaku         map[string]hongguoDanmakuCacheEntry
+	danmakuPending  map[string]*hongguoDanmakuCall
 }
 
 func (downloader *Downloader) hongguoClient() *hongguoAppClient {
@@ -57,6 +60,7 @@ func (downloader *Downloader) hongguoClient() *hongguoAppClient {
 			baseURL: hongguoAppBaseURL,
 			state:   hongguoCatalogState{Version: 1, DeviceID: newHongguoDeviceID(), InstallID: newHongguoDeviceID(), Feeds: map[string]hongguoCatalogCursor{}},
 			details: map[string]hongguoDetailEntry{}, pending: map[string]*hongguoDetailCall{},
+			webDetails: map[string]hongguoDetailEntry{}, webPending: map[string]*hongguoDetailCall{}, playbackPending: map[string]*hongguoDetailCall{},
 			searches: map[string]hongguoSearchEntry{}, searchPending: map[string]*hongguoSearchCall{},
 			suggestions: map[string]hongguoSuggestionEntry{}, suggestPending: map[string]*hongguoSuggestionCall{},
 		}

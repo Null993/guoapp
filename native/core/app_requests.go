@@ -34,6 +34,18 @@ func (engine *nativeEngine) beginRead(ctx context.Context, input nativeInput) (c
 	if previous.cancel != nil {
 		previous.cancel()
 	}
+	if len(engine.reads) >= 128 && previous.sequence == 0 {
+		oldest := ""
+		var stamp time.Time
+		for key, request := range engine.reads {
+			if request.cancel == nil && (oldest == "" || request.updated.Before(stamp)) {
+				oldest, stamp = key, request.updated
+			}
+		}
+		if oldest != "" {
+			delete(engine.reads, oldest)
+		}
+	}
 	if engine.readCount >= 16 || len(engine.reads) >= 128 && previous.sequence == 0 {
 		return nil, nil, errors.New("正在处理的请求较多，请稍后重试")
 	}

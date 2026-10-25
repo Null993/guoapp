@@ -71,6 +71,7 @@ class _PlaybackLaunchScreenState extends State<PlaybackLaunchScreen> {
   @override
   void dispose() {
     _generation++;
+    unawaited(widget.repository.cancelDetail(widget.drama));
     super.dispose();
   }
 
@@ -176,7 +177,10 @@ class _PlaybackLaunchScreenState extends State<PlaybackLaunchScreen> {
   @override
   Widget build(BuildContext context) => PopScope<void>(
     onPopInvokedWithResult: (didPop, result) {
-      if (didPop) _generation++;
+      if (didPop) {
+        _generation++;
+        unawaited(widget.repository.cancelDetail(widget.drama));
+      }
     },
     child:
         _player ??

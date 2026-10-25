@@ -35,6 +35,9 @@ func parseHuangguoSortDetail(body, pageURL string, patch Drama) (Drama, error) {
 		Thumbnail any    `json:"thumbnailUrl"`
 	}
 	expected, _ := url.Parse(pageURL)
+	if expected == nil {
+		return patch, errors.New("黄果详情地址无效")
+	}
 	matched := false
 	for _, block := range rankingJSONLD.FindAllStringSubmatch(body, -1) {
 		var graph struct {
@@ -49,7 +52,7 @@ func parseHuangguoSortDetail(body, pageURL string, patch Drama) (Drama, error) {
 				continue
 			}
 			actual, err := url.Parse(firstNonEmpty(row.URL, row.ID))
-			if err != nil || actual.Host != "" && !strings.EqualFold(actual.Host, expected.Host) && providerSourceForURL(actual.String()) != patch.Source || strings.TrimRight(actual.Path, "/") != strings.TrimRight(expected.Path, "/") || row.Name == "" || patch.Source == sourceHuangguoAI && huangguoTitleNeedsRepair(row.Name, patch.SourceID) {
+			if err != nil || actual.Host != "" && !strings.EqualFold(actual.Host, expected.Host) && providerSourceForURL(actual.String()) != patch.Source || !huangguoDetailPathMatches(actual.Path, expected.Path, patch.Source) || row.Name == "" || patch.Source == sourceHuangguoAI && huangguoTitleNeedsRepair(row.Name, patch.SourceID) {
 				continue
 			}
 			matched = true
@@ -62,8 +65,39 @@ func parseHuangguoSortDetail(body, pageURL string, patch Drama) (Drama, error) {
 			}
 		}
 	}
+	if !matched && patch.Source == sourceHuangguoVideo {
+		canonical := ""
+		for _, tag := range huangguoHTMLTag.FindAllString(body, -1) {
+			if strings.HasPrefix(strings.ToLower(tag), "<link") && strings.EqualFold(extractAttr(tag, "rel"), "canonical") {
+				canonical = extractAttr(tag, "href")
+				break
+			}
+		}
+		actual, err := url.Parse(canonical)
+		if err == nil && canonical != "" && (actual.Host == "" || strings.EqualFold(actual.Host, expected.Host)) && huangguoDetailPathMatches(actual.Path, expected.Path, patch.Source) {
+			if title := cleanText(firstMatchText(reH1Tag, body)); title != "" {
+				patch.Title, matched = title, true
+			}
+		}
+	}
 	if !matched {
 		return patch, fmt.Errorf("黄果详情没有返回所请求剧集的元数据")
+	}
+	if patch.Source == sourceHuangguoAI {
+		for _, class := range []string{"hg-web-play__poster", "hg-web-detail__poster"} {
+			block := huangguoClassBlock(huangguoNonContent.ReplaceAllString(body, ""), class)
+			for _, tag := range huangguoHTMLTag.FindAllString(block, -1) {
+				if !strings.HasPrefix(strings.ToLower(tag), "<img") {
+					continue
+				}
+				for _, attribute := range []string{"data-src", "data-original", "src"} {
+					if address := providerCoverAddress(extractAttr(tag, attribute), pageURL); address != "" {
+						patch.Cover, patch.CoverURL = address, address
+						break
+					}
+				}
+			}
+		}
 	}
 	if nativeNormalize(patch).Cover == "" {
 		for _, tag := range coverMetaTag.FindAllString(body, -1) {
@@ -87,8 +121,23 @@ func parseHuangguoSortDetail(body, pageURL string, patch Drama) (Drama, error) {
 		if count := episodeIndex(episode, 0); count > 0 {
 			patch.TotalEpisode, patch.EpisodeCount = count, count
 		}
+		if address, err := url.Parse(nativeNormalize(patch).Cover); err == nil && (strings.HasSuffix(address.Path, "/home_og.jpg") || strings.Contains(address.Path, "/cover-placeholder.")) {
+			patch.Cover, patch.CoverURL = "", ""
+		}
 	}
 	return patch, nil
+}
+
+func huangguoDetailPathMatches(actual, expected, source string) bool {
+	actual, expected = strings.TrimRight(actual, "/"), strings.TrimRight(expected, "/")
+	if actual == expected {
+		return true
+	}
+	if source != sourceHuangguoAI {
+		return false
+	}
+	a, b := strings.Split(strings.TrimPrefix(actual, "/"), "/"), strings.Split(strings.TrimPrefix(expected, "/"), "/")
+	return len(a) == 2 && len(b) == 2 && a[1] != "" && a[1] == b[1] && (a[0] == "detail" || a[0] == "video") && (b[0] == "detail" || b[0] == "video")
 }
 
 func huangguoDetailMetadata(body, pageURL, source, sourceID string) Drama {

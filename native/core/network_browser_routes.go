@@ -13,6 +13,7 @@ type browserRouteResult struct {
 	route    cdnRoute
 	response *http.Response
 	err      error
+	elapsed  time.Duration
 }
 
 func (transport *sourceBrowserTransport) discoverBrowserRoutes(ctx context.Context, host string, routes chan<- cdnRoute) {
@@ -88,9 +89,10 @@ func (transport *sourceBrowserTransport) roundTripRoutes(request *http.Request, 
 		active[id] = stop
 		tried[route.address] = true
 		go func() {
+			started := time.Now()
 			response, err := transport.roundTripAddress(request.Clone(attemptCtx), proxyURL, route.address)
 			select {
-			case results <- browserRouteResult{id: id, route: route, response: response, err: err}:
+			case results <- browserRouteResult{id: id, route: route, response: response, err: err, elapsed: time.Since(started)}:
 			case <-done:
 				if response != nil && response.Body != nil {
 					response.Body.Close()
@@ -152,6 +154,10 @@ func (transport *sourceBrowserTransport) roundTripRoutes(request *http.Request, 
 		case result := <-results:
 			stop := active[result.id]
 			delete(active, result.id)
+			if result.err == nil && proxyURL != "" && result.response.StatusCode == http.StatusNotFound && result.response.ContentLength == 0 && proxyInterceptionSuspected(request.URL.Hostname(), result.response.StatusCode, result.response.Header, nil, result.elapsed) {
+				result.response.Body.Close()
+				result.err = &proxyInterceptionError{host: request.URL.Hostname(), status: result.response.StatusCode, elapsed: result.elapsed}
+			}
 			if result.err != nil {
 				stop()
 				if firstErr == nil {

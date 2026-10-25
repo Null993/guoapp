@@ -92,9 +92,6 @@ func parseHongguoRanking(body string, board rankingBoard, page int) (rankingPage
 		if len(row.Tags) > 0 {
 			drama.CategoryName = row.Tags[0]
 		}
-		if len(row.EpisodeIDs) > 0 {
-			drama.TotalEpisode = len(row.EpisodeIDs)
-		}
 		result.Items = append(result.Items, rankingItem{Rank: row.Rank, Drama: drama, Metric: row.Heat})
 	}
 	if len(result.Items) == 0 && result.HasMore {

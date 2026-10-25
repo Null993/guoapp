@@ -50,7 +50,7 @@ Future<void> main(List<String> arguments) async {
     DiaryService.add('[Error] $error\n$stack');
     return false;
   };
-  DiaryService.add('[App] 应用启动，版本: 0.2.77+84, 平台: ${Platform.operatingSystem}');
+  DiaryService.add('[App] 应用启动，版本: 0.2.78+85, 平台: ${Platform.operatingSystem}');
   if (Platform.isAndroid) {
     await SystemChrome.setEnabledSystemUIMode(SystemUiMode.edgeToEdge);
     SystemChrome.setSystemUIOverlayStyle(AppTheme.systemBars(Brightness.dark));

@@ -120,6 +120,16 @@ func TestNativeCoverFormatsFailuresAndOfflineFallback(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	isolate := func(engine *nativeEngine) {
+		base := engine.downloader.client.Transport
+		engine.downloader.client.Transport = sourceFixtureTransport(func(request *http.Request) (*http.Response, error) {
+			if request.URL.Host != upstream.Listener.Addr().String() {
+				return nil, fmt.Errorf("fixture blocks external host %s", request.URL.Host)
+			}
+			return base.RoundTrip(request)
+		})
+	}
+	isolate(engine)
 	drama := nativeDrama{ID: "huangguoai:2", Source: sourceHuangguoAI, Cover: upstream.URL + "/cover"}
 	if _, err := engine.covers.load(context.Background(), drama, false); err == nil || len(engine.covers.entries) != 0 {
 		t.Fatal("invalid cover was cached")
@@ -136,6 +146,7 @@ func TestNativeCoverFormatsFailuresAndOfflineFallback(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	isolate(restarted)
 	if cached, err := restarted.covers.load(context.Background(), drama, false); err != nil || cached != path || calls.Load() != 3 {
 		t.Fatal("expired image was not retained during a network failure", err, cached, calls.Load())
 	}

@@ -628,6 +628,7 @@ func (engine *nativeEngine) runContinuousSourceUpdate(ctx context.Context, sourc
 			return &nativeSourceRetryWindowError{cause: errors.Join(window.cause, err)}
 		}
 		if err == nil {
+			engine.changeSourceRecord(source, func(record *nativeSourceRecord) { record.Error = "" })
 			attempts = 0
 			window.reset()
 			continue
@@ -647,6 +648,7 @@ func (engine *nativeEngine) runContinuousSourceUpdate(ctx context.Context, sourc
 		}
 		engine.changeSourceRecord(source, func(record *nativeSourceRecord) {
 			record.Stage = "资料请求未成功，等待后自动续跑"
+			record.Error = publicError(err).Error()
 			record.RetryAt = retry
 		})
 		if waitErr := window.wait(ctx, retry); waitErr != nil {
@@ -712,6 +714,7 @@ func (engine *nativeEngine) retrySourceStep(ctx context.Context, source string, 
 			return &nativeSourceRetryWindowError{cause: errors.Join(window.cause, err)}
 		}
 		if err == nil {
+			engine.changeSourceRecord(source, func(record *nativeSourceRecord) { record.Error = "" })
 			return nil
 		}
 		attempts++
@@ -729,6 +732,7 @@ func (engine *nativeEngine) retrySourceStep(ctx context.Context, source string, 
 		}
 		engine.changeSourceRecord(source, func(record *nativeSourceRecord) {
 			record.Stage = "请求未成功，等待后自动续跑"
+			record.Error = publicError(err).Error()
 			record.RetryAt = retry
 		})
 		if err := window.wait(ctx, retry); err != nil {

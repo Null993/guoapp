@@ -991,7 +991,7 @@ class _SourcesScreenState extends State<SourcesScreen> {
               Padding(
                 padding: const EdgeInsets.only(top: 8),
                 child: Text(
-                  '请在 $seconds 秒后重试',
+                  busy ? '$seconds 秒后自动重试，无需再次点击更新' : '请在 $seconds 秒后重试',
                   style: TextStyle(color: colors.error),
                 ),
               ),

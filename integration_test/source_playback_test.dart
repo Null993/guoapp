@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
+import 'dart:ui' as ui;
 
 import 'package:duanju_app/core_bridge.dart';
 import 'package:duanju_app/local_store.dart';
@@ -36,7 +37,7 @@ void main() {
     'SOURCE_IDS',
   ).split(',').where((id) => id.isNotEmpty).toSet();
   final report = <String, dynamic>{
-    'version': '0.2.77+84',
+    'version': '0.2.78+85',
     'platform': Platform.operatingSystem,
     'startedAt': DateTime.now().toUtc().toIso8601String(),
     'requiredPerSource': 3,
@@ -114,6 +115,67 @@ void main() {
         (await repository.resourceSettings()).proxyMode;
     await save();
   });
+
+  if (const bool.fromEnvironment('VERIFY_HUANGGUO_COVERS')) {
+    testWidgets('real Huangguo covers refresh and decode', (tester) async {
+      final checks = <Map<String, dynamic>>[];
+      report['coverChecks'] = checks;
+      for (final id in [
+        'huangguoai:2902',
+        'huangguoai:3520',
+        'huangguo-video:series/bfuhru9z',
+      ]) {
+        final record = <String, dynamic>{'id': id, 'success': false};
+        checks.add(record);
+        await save();
+        await tester.runAsync(() async {
+          final elapsed = Stopwatch()..start();
+          final drama = Drama(id: id, source: id.split(':').first, title: id);
+          String path;
+          try {
+            path = await repository.cover(drama);
+          } catch (error) {
+            record['initialError'] = safeError(error);
+            await save();
+            if (error is AppFailure &&
+                {
+                  'source_blocked',
+                  'source_verification',
+                }.contains(error.code)) {
+              rethrow;
+            }
+            await Future<void>.delayed(const Duration(seconds: 15));
+            record['automaticRetries'] = 1;
+            path = await repository.cover(drama);
+          }
+          final retryPath = await repository.cover(drama, force: true);
+          for (final file in [path, retryPath]) {
+            final bytes = await File(file).readAsBytes();
+            final codec = await ui.instantiateImageCodec(
+              bytes,
+              targetWidth: 160,
+            );
+            try {
+              final frame = await codec.getNextFrame();
+              try {
+                expect(frame.image.width, greaterThan(0));
+                expect(frame.image.height, greaterThan(0));
+                record['width'] = frame.image.width;
+                record['height'] = frame.image.height;
+              } finally {
+                frame.image.dispose();
+              }
+            } finally {
+              codec.dispose();
+            }
+          }
+          record['elapsedMs'] = elapsed.elapsedMilliseconds;
+          record['success'] = true;
+        });
+        await save();
+      }
+    }, timeout: const Timeout(Duration(minutes: 5)));
+  }
 
   for (final source in SourceSite.values) {
     if (selected.isNotEmpty && !selected.contains(source.id)) continue;

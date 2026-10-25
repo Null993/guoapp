@@ -312,7 +312,7 @@ func (transport *autoNetworkTransport) RoundTrip(request *http.Request) (*http.R
 			start(index)
 		}
 		if len(active) == 0 && next == len(order) {
-			if lastWasGateway {
+			if lastWasGateway && lastGateway.StatusCode != 404 {
 				return lastGateway, nil
 			}
 			return nil, fmt.Errorf("自动网络切换失败（已尝试 %d 条网络路径）: %w", len(order), errors.Join(failures...))
@@ -340,7 +340,11 @@ func (transport *autoNetworkTransport) RoundTrip(request *http.Request) (*http.R
 			cancel()
 			lastWasGateway = gateway
 			if gateway {
-				err = fmt.Errorf("网络网关 HTTP %d", response.StatusCode)
+				if response.StatusCode == 404 {
+					err = fmt.Errorf("代理返回空 HTTP 404（疑似拦截）: %w", &proxyInterceptionError{host: request.URL.Hostname(), status: 404, elapsed: result.elapsed})
+				} else {
+					err = fmt.Errorf("网络网关 HTTP %d", response.StatusCode)
+				}
 				response.Body.Close()
 				stored := *response
 				stored.Body = http.NoBody
@@ -350,7 +354,11 @@ func (transport *autoNetworkTransport) RoundTrip(request *http.Request) (*http.R
 			if err != nil && !gateway && !automaticNetworkFailure(err) {
 				return nil, err
 			}
-			failures = append(failures, err)
+			mode := "直连"
+			if routes[result.index].proxy != nil {
+				mode = "代理"
+			}
+			failures = append(failures, fmt.Errorf("%s: %w", mode, err))
 			allowFallback = true
 			recordFallback(result.index)
 		}

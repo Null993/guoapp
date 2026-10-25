@@ -130,49 +130,22 @@ func (d *Downloader) fetchHongguoCategoryPage(ctx context.Context, route, catego
 
 func (d *Downloader) fetchHongguoChapters(ctx context.Context, sourceID string) (string, []Chapter, error) {
 	sourceID = strings.TrimPrefix(strings.TrimSpace(sourceID), "hg-series-v1:")
-	if sourceID == "" {
-		return "", nil, fmt.Errorf("empty hongguo sourceID")
-	}
-	entry, appErr := d.hongguoAppDetail(ctx, sourceID)
-	if appErr == nil {
-		return entry.Drama.DisplayTitle(), append([]Chapter(nil), entry.Chapters...), nil
-	}
-	if ctx.Err() != nil {
-		return "", nil, ctx.Err()
-	}
-	title, chapters, webErr := d.fetchHongguoWebChapters(ctx, sourceID)
-	if webErr == nil {
-		return title, chapters, nil
-	}
-	return "", nil, fmt.Errorf("App 详情失败: %v；网页详情失败: %w", publicError(appErr), webErr)
-}
-
-func (d *Downloader) fetchHongguoWebChapters(ctx context.Context, sourceID string) (string, []Chapter, error) {
-	body, err := d.fetchProviderText(ctx, hongguoBaseURL+"/detail?series_id="+url.QueryEscape(sourceID), hongguoBaseURL+"/")
+	entry, err := d.hongguoPlaybackDetail(ctx, sourceID)
 	if err != nil {
 		return "", nil, err
 	}
-	data := parseRouterData(body)
-	page := routerLoaderMap(data, "detail_page", "detail_")
-	detail, _ := page["seriesDetail"].(map[string]any)
-	if len(detail) == 0 {
-		return "", nil, fmt.Errorf("hongguo detail is empty")
+	return entry.Drama.DisplayTitle(), append([]Chapter(nil), entry.Chapters...), nil
+}
+
+func (d *Downloader) fetchHongguoWebChapters(ctx context.Context, sourceID string) (string, []Chapter, error) {
+	entry, err := d.hongguoWebDetail(ctx, sourceID)
+	if err != nil {
+		return "", nil, err
 	}
-	title := firstNonEmpty(mapString(detail, "series_name", "series_title", "name"), sourceID)
-	vids := anyList(detail["vid_list"])
-	chapters := make([]Chapter, 0, len(vids))
-	for i, v := range vids {
-		vid := strings.TrimSpace(fmt.Sprint(v))
-		if vid == "" || vid == "<nil>" {
-			continue
-		}
-		idx := i + 1
-		chapters = append(chapters, Chapter{ID: providerChapterID(sourceHongguo, sourceID, vid), Source: sourceHongguo, Title: fmt.Sprintf("第%d集", idx), VideoURL: "hongguo-cenc://" + vid, CurrentEpisode: rawEpisode(idx)})
+	if len(entry.Chapters) == 0 {
+		return entry.Drama.DisplayTitle(), nil, errors.New("红果详情没有返回可播放的分集 ID")
 	}
-	if len(chapters) == 0 {
-		return title, nil, errors.New("红果详情没有返回剧集 ID")
-	}
-	return title, chapters, nil
+	return entry.Drama.DisplayTitle(), append([]Chapter(nil), entry.Chapters...), nil
 }
 
 func parseRouterData(raw string) map[string]any {

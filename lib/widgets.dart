@@ -94,10 +94,12 @@ class DramaCover extends StatelessWidget {
     required this.drama,
     required this.repository,
     this.radius = 14,
+    this.episodeLabel,
   });
   final Drama drama;
   final AppRepository repository;
   final double radius;
+  final String? episodeLabel;
   static const imagesDisabled = bool.fromEnvironment('DISABLE_REMOTE_IMAGES');
 
   @override
@@ -148,12 +150,12 @@ class DramaCover extends StatelessWidget {
               ),
             ),
           ),
-          if (drama.episodes > 0)
+          if (drama.episodes > 0 || episodeLabel != null)
             Positioned(
               left: 9,
               bottom: 9,
               child: Text(
-                '共 ${drama.episodes} 集',
+                episodeLabel ?? '共 ${drama.episodes} 集',
                 style: const TextStyle(color: Colors.white, fontSize: 12),
               ),
             ),
@@ -200,6 +202,9 @@ class CachedCoverImage extends StatefulWidget {
 class _CachedCoverImageState extends State<CachedCoverImage> {
   Future<String>? _file;
   Timer? _coverTimer;
+  Timer? _automaticRetryTimer;
+  int _automaticRetries = 0;
+  Object? _coverError;
   ValueNotifier<bool>? _scrolling;
   int _coverRevision = 0;
   bool _coverFailed = false;
@@ -262,6 +267,10 @@ class _CachedCoverImageState extends State<CachedCoverImage> {
         oldWidget.drama.id != widget.drama.id ||
         oldWidget.drama.cover != widget.drama.cover ||
         oldWidget.drama.source != widget.drama.source) {
+      _automaticRetryTimer?.cancel();
+      _automaticRetryTimer = null;
+      _automaticRetries = 0;
+      _coverError = null;
       _coverFailed = _retryOnFailure = false;
       _failedPath = null;
       _coverRevision = widget.repository.catalogUpdates.coverRevision(
@@ -296,12 +305,16 @@ class _CachedCoverImageState extends State<CachedCoverImage> {
   @override
   void dispose() {
     _coverTimer?.cancel();
+    _automaticRetryTimer?.cancel();
     _scrolling?.removeListener(_scrollChanged);
     widget.repository.catalogUpdates.removeListener(_metadataChanged);
     super.dispose();
   }
 
-  Future<void> _retry(String? path) async {
+  Future<void> _retry(String? path, {bool automatic = false}) async {
+    _automaticRetryTimer?.cancel();
+    _automaticRetryTimer = null;
+    if (!automatic) _automaticRetries = 0;
     if (path != null) {
       await ResizeImage.resizeIfNeeded(
         440,
@@ -315,24 +328,40 @@ class _CachedCoverImageState extends State<CachedCoverImage> {
         _failedPath = null;
         _file = widget.repository.cover(
           widget.repository.catalogUpdates.current(widget.drama),
-          force: true,
+          force: !automatic,
         );
         _file!.ignore();
       });
     }
   }
 
-  Widget _failed(String? path) {
+  Widget _failed(String? path, [Object? error]) {
+    _coverError = error;
+    final blocked =
+        error is AppFailure &&
+        {'source_blocked', 'source_verification'}.contains(error.code);
+    if (!blocked && _automaticRetries < 1 && _automaticRetryTimer == null) {
+      _automaticRetries++;
+      _automaticRetryTimer = Timer(const Duration(seconds: 15), () {
+        _automaticRetryTimer = null;
+        if (mounted && _coverFailed && _scrolling?.value != true) {
+          unawaited(_retry(_failedPath, automatic: true));
+        }
+      });
+    }
     _coverFailed = true;
     _failedPath = path;
     if (_retryOnFailure) _queueRetry();
     return Center(
-      child: IconButton(
-        tooltip: '重试海报',
-        onPressed: () => _retry(path),
-        icon: Icon(
-          Icons.refresh_rounded,
-          color: Theme.of(context).colorScheme.onSurfaceVariant,
+      child: Tooltip(
+        message: _coverError?.toString() ?? '封面暂不可用，可点击重试',
+        child: IconButton(
+          tooltip: '重试海报',
+          onPressed: () => _retry(path),
+          icon: Icon(
+            Icons.refresh_rounded,
+            color: Theme.of(context).colorScheme.onSurfaceVariant,
+          ),
         ),
       ),
     );
@@ -343,17 +372,30 @@ class _CachedCoverImageState extends State<CachedCoverImage> {
     future: _file,
     builder: (context, snapshot) {
       if (snapshot.connectionState != ConnectionState.done) {
-        return widget.placeholder;
+        return Stack(
+          fit: StackFit.expand,
+          children: [
+            widget.placeholder,
+            if (_file != null)
+              const Center(
+                child: SizedBox(
+                  width: 20,
+                  height: 20,
+                  child: CircularProgressIndicator(strokeWidth: 2),
+                ),
+              ),
+          ],
+        );
       }
       if (snapshot.hasError || !snapshot.hasData) {
-        return _failed(null);
+        return _failed(null, snapshot.error);
       }
       return Image.file(
         File(snapshot.data!),
         fit: BoxFit.cover,
         cacheWidth: 440,
         excludeFromSemantics: true,
-        errorBuilder: (_, error, stack) => _failed(snapshot.data),
+        errorBuilder: (_, error, stack) => _failed(snapshot.data, error),
       );
     },
   );
