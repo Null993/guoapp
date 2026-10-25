@@ -36,7 +36,7 @@ void main() {
     'SOURCE_IDS',
   ).split(',').where((id) => id.isNotEmpty).toSet();
   final report = <String, dynamic>{
-    'version': '0.2.76+83',
+    'version': '0.2.77+84',
     'platform': Platform.operatingSystem,
     'startedAt': DateTime.now().toUtc().toIso8601String(),
     'requiredPerSource': 3,

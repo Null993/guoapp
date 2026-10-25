@@ -3,6 +3,7 @@ package core
 import (
 	"context"
 	"errors"
+	"strings"
 	"time"
 )
 
@@ -99,7 +100,7 @@ func (engine *nativeEngine) nativeRecommendations(ctx context.Context, input nat
 			fresh = append(fresh, item)
 		}
 	}
-	if len(fresh) == 0 && page.HasMore {
+	if len(fresh) == 0 && page.HasMore && !strings.HasPrefix(page.SessionID, "web:") {
 		return nativeCatalogResult{}, errors.New("暂时没有新的推荐，已保留上次位置；可重试或刷新推荐")
 	}
 	items := mergeNativeCatalog(previous, fresh)

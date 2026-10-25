@@ -362,6 +362,34 @@ void main() {
     },
   );
 
+  testWidgets(
+    'return during launch ignores detail arriving during pop animation',
+    (tester) async {
+      final store = await create();
+      final repository = LibraryFeatureRepository()
+        ..pendingDetail = Completer<DramaDetail>();
+      await tester.pumpWidget(
+        MaterialApp(
+          home: HomeScreen(repository: repository, store: store),
+        ),
+      );
+      await tester.pumpAndSettle();
+      await tester.tap(find.byKey(ValueKey(first.id)));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 350));
+      await tester.tap(find.byTooltip('Back'));
+      await tester.pump(const Duration(milliseconds: 10));
+      repository.pendingDetail!.complete(
+        LibraryFeatureRepository.makeDetail(first, 2),
+      );
+      await tester.pumpAndSettle();
+      expect(find.byType(PlaybackLaunchScreen), findsNothing);
+      expect(find.byType(HomeScreen), findsOneWidget);
+      expect(tester.takeException(), isNull);
+      await tester.pumpWidget(const SizedBox.shrink());
+    },
+  );
+
   for (final size in [const Size(360, 640), const Size(1100, 720)]) {
     testWidgets('new library controls fit $size with large text', (
       tester,

@@ -9,6 +9,8 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+
+	"golang.org/x/net/html"
 )
 
 // 鬼片网（guipian）原生站源：MacCMS 风格的 HTML 站点，鬼片/电视剧/动漫三大类。
@@ -287,7 +289,13 @@ func guipianActors(body string) string {
 
 // guipianPickPlaylist 选出分集最多的一条线路。
 func guipianPickPlaylist(body string) (string, []Chapter, error) {
-	tabs := reGuipianTab.FindAllStringSubmatch(body, -1)
+	document, err := html.Parse(strings.NewReader(body))
+	if err != nil {
+		return "", nil, err
+	}
+	tabs := providerHTMLNodes(document, func(node *html.Node) bool {
+		return strings.HasPrefix(providerHTMLAttr(node, "data-target"), "#ewave-playlist-")
+	})
 	if len(tabs) == 0 {
 		return "", nil, errors.New("鬼片网未找到可用播放线路")
 	}
@@ -296,29 +304,24 @@ func guipianPickPlaylist(body string) (string, []Chapter, error) {
 	var best []Chapter
 	seen := map[string]bool{}
 	for _, tab := range tabs {
-		anchor, name := tab[1], strings.TrimSpace(tab[2])
+		anchor := strings.TrimPrefix(providerHTMLAttr(tab, "data-target"), "#")
+		name := providerHTMLText(tab)
 		if anchor == "" || seen[anchor] {
 			continue
 		}
 		seen[anchor] = true
-		// Go RE2 不支持 lookahead，改用显式字符串截断：从本容器标记之后
-		// 截到下一个 playlist-slide 或 </section>，避免消耗式分组吃掉下一条线路的开头。
-		marker := fmt.Sprintf(`id="%s"`, anchor)
-		start := strings.Index(body, marker)
-		if start < 0 {
+		containers := providerHTMLNodes(document, func(node *html.Node) bool { return providerHTMLAttr(node, "id") == anchor })
+		if len(containers) != 1 {
 			continue
-		}
-		segment := body[start+len(marker):]
-		if end := strings.Index(segment, `<div class="playlist-slide`); end >= 0 {
-			segment = segment[:end]
-		} else if end := strings.Index(segment, `</section>`); end >= 0 {
-			segment = segment[:end]
 		}
 		var chapters []Chapter
 		seenPath := map[string]bool{}
-		for index, ep := range reGuipianEpisode.FindAllStringSubmatch(segment, -1) {
-			epTitle := guipianClean(ep[1])
-			href := strings.TrimSpace(ep[2])
+		links := providerHTMLNodes(containers[0], func(node *html.Node) bool {
+			return node.Type == html.ElementNode && node.Data == "a" && node.Parent != nil && node.Parent.Data == "li"
+		})
+		for index, ep := range links {
+			epTitle := firstNonEmpty(strings.TrimSpace(providerHTMLAttr(ep, "title")), providerHTMLText(ep))
+			href := strings.TrimSpace(providerHTMLAttr(ep, "href"))
 			if href == "" {
 				continue
 			}

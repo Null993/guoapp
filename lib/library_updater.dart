@@ -50,6 +50,11 @@ class LibraryUpdater extends ChangeNotifier {
     if (_valid) notifyListeners();
   }
 
+  void stopWatching() {
+    _timer?.cancel();
+    _timer = null;
+  }
+
   void _accept(SourceStatus status, {bool submitted = false}) {
     if (!_valid || !store.allowsSource(status.source)) return;
     _statuses[status.source] = status;

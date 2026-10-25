@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 
 import 'catalog_filters.dart';
@@ -131,6 +133,7 @@ class _RankingsScreenState extends State<RankingsScreen> {
         _loading = false;
         _more = false;
       });
+      unawaited(_supplementCounts(generation, result.items));
     } catch (error) {
       if (mounted && generation == _generation) {
         setState(() {
@@ -141,6 +144,33 @@ class _RankingsScreenState extends State<RankingsScreen> {
         });
       }
     }
+  }
+
+  Future<void> _supplementCounts(
+    int generation,
+    List<RankingItem> items,
+  ) async {
+    final pending = items
+        .where(
+          (item) => item.drama.source == 'hongguo' && item.drama.episodes <= 3,
+        )
+        .iterator;
+    Future<void> worker() async {
+      while (mounted && generation == _generation && pending.moveNext()) {
+        final drama = pending.current.drama;
+        if (!widget.store.allowsSource(drama.source)) return;
+        try {
+          final fresh = await widget.repository.supplementMetadata(drama);
+          if (!mounted || generation != _generation) return;
+          if (fresh != null && widget.store.allowsSource(fresh.source)) {
+            widget.repository.catalogUpdates.publish(fresh);
+            await widget.store.refreshDrama(fresh);
+          }
+        } catch (_) {}
+      }
+    }
+
+    await Future.wait([worker(), worker()]);
   }
 
   void _select(RankingBoard board) {

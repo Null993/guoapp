@@ -260,7 +260,7 @@ func hongguoDramaFromAny(v any, category string) Drama {
 	title := firstNonEmpty(mapString(vd, "series_title", "series_name", "title"), mapString(m, "series_name", "name"), sourceID)
 	cover := firstNonEmpty(mapString(vd, "series_cover", "cover"), mapString(m, "series_cover"))
 	intro := firstNonEmpty(mapString(vd, "series_intro", "video_desc"), mapString(m, "series_intro"))
-	count := firstNonEmpty(mapString(vd, "episode_cnt"), mapString(m, "episode_cnt"))
+	count := firstNonEmpty(mapString(vd, "episode_total_cnt", "total_episode_cnt"), mapString(nestedMap(vd, "series_episode_info"), "episode_total_cnt", "total_episode_cnt"), mapString(m, "episode_total_cnt", "total_episode_cnt"), mapString(vd, "episode_cnt"), mapString(m, "episode_cnt"))
 	remark := firstNonEmpty(mapString(vd, "episode_right_text"), mapString(m, "episode_right_text"))
 	releaseStatus := releaseStatusFromRemark(remark)
 	if mapString(vd, "series_status") == "1" {

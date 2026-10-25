@@ -786,9 +786,11 @@ func (engine *nativeEngine) nativeCatalog(ctx context.Context, input nativeInput
 		if category != "" && state != nil {
 			result.HasMore = !state.Feeds["category:"+category].Exhausted
 		}
-		if len(items) == 0 && err != nil && ctx.Err() == nil && (category == "" || category == "short_play") {
+		if len(items) == 0 && err != nil && ctx.Err() == nil {
 			var totalPages int
-			items, totalPages, err = d.fetchHongguoCategoryPage(ctx, "real-drama?page="+strconv.Itoa(page), "真人剧")
+			if route, label, valid := hongguoWebGenre(category); valid {
+				items, totalPages, err = d.fetchHongguoCategoryPage(ctx, route+"?page="+strconv.Itoa(page), label)
+			}
 			result.HasMore = page < totalPages
 		}
 	case sourceHuangdou:
@@ -913,9 +915,10 @@ func (engine *nativeEngine) nativeDetail(ctx context.Context, drama nativeDrama)
 			}
 		}
 	}
+	knownEpisodes := drama.Episodes
 	drama.Source, drama.SourceID, drama.Episodes = source, sourceID, len(chapters)
-	if source == sourceHuangju || source == sourceYeguo {
-		drama.Episodes = max(drama.Episodes, nativeNormalize(raw).Episodes)
+	if source == sourceHuangju || source == sourceYeguo || source == sourceHongguo {
+		drama.Episodes = max(drama.Episodes, knownEpisodes, nativeNormalize(raw).Episodes)
 	}
 	warning := ""
 	if fetching, _ := ctx.Value(nativeMetadataFetchKey{}).(bool); fetching {

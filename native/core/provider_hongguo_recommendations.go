@@ -23,6 +23,48 @@ type hongguoRecommendationPage struct {
 	Saved      bool    `json:"saved"`
 }
 
+func hongguoWebGenre(genre string) (string, string, bool) {
+	switch genre {
+	case "", "short_play":
+		return "real-drama", "真人剧", true
+	case "comic_series":
+		return "comic-drama", "漫剧", true
+	case "ai_series":
+		return "ai-drama", "AI剧", true
+	}
+	return "", "", false
+}
+
+func (downloader *Downloader) hongguoWebRecommendations(ctx context.Context, query hongguoRecommendationQuery) (hongguoRecommendationPage, error) {
+	route, label, valid := hongguoWebGenre(query.Genre)
+	if !valid {
+		return hongguoRecommendationPage{}, errors.New("推荐分类无效")
+	}
+	page := query.Offset + 1
+	seen := map[string]bool{}
+	for _, id := range query.Seen {
+		seen[strings.TrimPrefix(id, "hongguo:")] = true
+	}
+	for scanned := 0; scanned < 3; scanned++ {
+		items, pages, err := downloader.fetchHongguoCategoryPage(ctx, route+"?page="+strconv.Itoa(page), label)
+		if err != nil {
+			return hongguoRecommendationPage{}, err
+		}
+		filtered := make([]Drama, 0, len(items))
+		for _, item := range items {
+			if !seen[strings.TrimPrefix(item.ID, "hongguo:")] {
+				filtered = append(filtered, item)
+			}
+		}
+		result := hongguoRecommendationPage{Dramas: filtered, NextOffset: page, SessionID: "web:" + query.Genre, HasMore: page < pages}
+		if len(filtered) > 0 || !result.HasMore || scanned == 2 {
+			return result, nil
+		}
+		page++
+	}
+	return hongguoRecommendationPage{}, errors.New("红果网页推荐分页不可用")
+}
+
 func (query hongguoRecommendationQuery) validate() error {
 	known := false
 	for _, genre := range hongguoAppGenres {
@@ -43,6 +85,9 @@ func (downloader *Downloader) fetchHongguoRecommendations(ctx context.Context, q
 	page := hongguoRecommendationPage{Dramas: []Drama{}}
 	if err := query.validate(); err != nil {
 		return page, err
+	}
+	if query.SessionID == "web:"+query.Genre {
+		return downloader.hongguoWebRecommendations(ctx, query)
 	}
 	scene, category := "", ""
 	for _, genre := range hongguoAppGenres {
@@ -74,7 +119,16 @@ func (downloader *Downloader) fetchHongguoRecommendations(ctx context.Context, q
 	}
 	result, err := downloader.hongguoAppRequest(ctx, http.MethodPost, "/reading/distribution/category/landpage/v/", nil, payload)
 	if err != nil {
-		return page, err
+		var backoff *requestBackoff
+		if ctx.Err() != nil || errors.As(err, &backoff) {
+			return page, err
+		}
+		query.Offset = 0
+		fallback, webErr := downloader.hongguoWebRecommendations(ctx, query)
+		if webErr == nil {
+			return fallback, nil
+		}
+		return page, errors.Join(err, webErr)
 	}
 	data := nestedMap(result, "data")
 	rows, valid := data["video_data"].([]any)

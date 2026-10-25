@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:io';
 
 import 'package:flutter/material.dart';
@@ -197,7 +198,9 @@ class CachedCoverImage extends StatefulWidget {
 }
 
 class _CachedCoverImageState extends State<CachedCoverImage> {
-  late Future<String> _file;
+  Future<String>? _file;
+  Timer? _coverTimer;
+  ValueNotifier<bool>? _scrolling;
   int _coverRevision = 0;
   bool _coverFailed = false;
   bool _retryOnFailure = false;
@@ -211,7 +214,41 @@ class _CachedCoverImageState extends State<CachedCoverImage> {
       widget.drama.id,
     );
     widget.repository.catalogUpdates.addListener(_metadataChanged);
-    _file = widget.repository.cover(widget.drama);
+    _scheduleCover();
+  }
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    final scrolling = Scrollable.maybeOf(context)?.position.isScrollingNotifier;
+    if (identical(scrolling, _scrolling)) return;
+    _scrolling?.removeListener(_scrollChanged);
+    _scrolling = scrolling;
+    _scrolling?.addListener(_scrollChanged);
+    _scrollChanged();
+  }
+
+  void _scrollChanged() {
+    if (_scrolling?.value == true) {
+      _coverTimer?.cancel();
+    } else if (_file == null) {
+      _scheduleCover();
+    } else if (_coverFailed && _retryOnFailure) {
+      _queueRetry();
+    }
+  }
+
+  void _scheduleCover() {
+    _coverTimer?.cancel();
+    _file = null;
+    if (_scrolling?.value == true) return;
+    _coverTimer = Timer(const Duration(milliseconds: 100), () {
+      if (!mounted || _scrolling?.value == true) return;
+      setState(() {
+        _file = widget.repository.cover(widget.drama);
+        _file!.ignore();
+      });
+    });
   }
 
   @override
@@ -230,7 +267,7 @@ class _CachedCoverImageState extends State<CachedCoverImage> {
       _coverRevision = widget.repository.catalogUpdates.coverRevision(
         widget.drama.id,
       );
-      _file = widget.repository.cover(widget.drama);
+      _scheduleCover();
     }
   }
 
@@ -245,11 +282,11 @@ class _CachedCoverImageState extends State<CachedCoverImage> {
   }
 
   void _queueRetry() {
-    if (_retryQueued || !_retryOnFailure) return;
+    if (_retryQueued || !_retryOnFailure || _scrolling?.value == true) return;
     _retryQueued = true;
     WidgetsBinding.instance.addPostFrameCallback((_) {
       _retryQueued = false;
-      if (!mounted || !_retryOnFailure) return;
+      if (!mounted || !_retryOnFailure || _scrolling?.value == true) return;
       _retryOnFailure = false;
       _retry(_failedPath);
     });
@@ -258,6 +295,8 @@ class _CachedCoverImageState extends State<CachedCoverImage> {
 
   @override
   void dispose() {
+    _coverTimer?.cancel();
+    _scrolling?.removeListener(_scrollChanged);
     widget.repository.catalogUpdates.removeListener(_metadataChanged);
     super.dispose();
   }
@@ -278,6 +317,7 @@ class _CachedCoverImageState extends State<CachedCoverImage> {
           widget.repository.catalogUpdates.current(widget.drama),
           force: true,
         );
+        _file!.ignore();
       });
     }
   }

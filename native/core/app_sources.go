@@ -552,7 +552,6 @@ func (engine *nativeEngine) runContinuousSourceUpdate(ctx context.Context, sourc
 		engine.changeSourceRecord(source, func(record *nativeSourceRecord) { record.CatalogStarted = true })
 	}
 	note := ""
-	stalledPages := 0
 	pageLimit := max(nativeSourceCatalogPageLimit, engine.downloader.cfg.MaxPagesPerSort)
 	for {
 		current := engine.nativeCached(source)
@@ -581,15 +580,7 @@ func (engine *nativeEngine) runContinuousSourceUpdate(ctx context.Context, sourc
 			}
 			return err
 		}
-		next := engine.nativeCached(source)
-		if next.HasMore && len(next.Items) <= len(current.Items) {
-			stalledPages++
-			if stalledPages >= 3 {
-				return errors.New("源站目录连续多页没有新增内容，更新尚未完成，已保留当前目录位置")
-			}
-		} else {
-			stalledPages = 0
-		}
+
 	}
 	attempts := 0
 	runTotal := 0

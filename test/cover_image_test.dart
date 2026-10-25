@@ -1,6 +1,7 @@
 import 'dart:io';
 
 import 'package:duanju_app/core_bridge.dart';
+import 'package:duanju_app/catalog_updates.dart';
 import 'package:duanju_app/models.dart';
 import 'package:duanju_app/widgets.dart';
 import 'package:flutter/material.dart';
@@ -22,6 +23,62 @@ class CoverFixtureRepository extends FixtureRepository {
 }
 
 void main() {
+  test(
+    'metadata cache evicts old entries without retaining cover revisions',
+    () {
+      final cache = CatalogUpdates();
+      final oldest = const Drama(
+        id: 'hongguo:old',
+        source: 'hongguo',
+        title: '原始',
+      );
+      cache.publish(
+        const Drama(id: 'hongguo:old', source: 'hongguo', title: '更新'),
+        retryCover: true,
+      );
+      for (var i = 0; i < CatalogUpdates.maximumEntries; i++) {
+        cache.publish(
+          Drama(id: 'hongguo:$i', source: 'hongguo', title: '合成$i'),
+        );
+      }
+      expect(cache.coverRevision(oldest.id), 0);
+      expect(cache.current(oldest).title, '原始');
+      cache.dispose();
+    },
+  );
+
+  testWidgets('scrolling defers new cover work until idle', (tester) async {
+    final repository = CoverFixtureRepository();
+    final scroll = ScrollController();
+    await tester.pumpWidget(
+      MaterialApp(
+        home: ListView(
+          controller: scroll,
+          children: [
+            SizedBox(
+              height: 150,
+              child: CachedCoverImage(
+                drama: FixtureRepository.free,
+                repository: repository,
+                placeholder: const SizedBox(),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+    scroll.position.isScrollingNotifier.value = true;
+    await tester.pump(const Duration(milliseconds: 200));
+    expect(repository.attempts, isEmpty);
+    scroll.position.isScrollingNotifier.value = false;
+    await tester.pump(const Duration(milliseconds: 100));
+    await tester.pumpAndSettle();
+    expect(repository.attempts, [false]);
+    expect(tester.takeException(), isNull);
+    await tester.pumpWidget(const SizedBox.shrink());
+    scroll.dispose();
+  });
+
   testWidgets('failed cover can retry and render a decoded local file', (
     tester,
   ) async {

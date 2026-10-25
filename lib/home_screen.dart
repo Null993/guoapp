@@ -4,8 +4,8 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
 import 'app_layout.dart';
+import 'app_routes.dart';
 import 'app_bottom_navigation.dart';
-import 'app_build.dart';
 import 'core_bridge.dart';
 import 'catalog_filters.dart';
 import 'catalog_browser.dart';
@@ -42,7 +42,7 @@ class HomeScreen extends StatefulWidget {
   State<HomeScreen> createState() => _HomeScreenState();
 }
 
-class _HomeScreenState extends State<HomeScreen> {
+class _HomeScreenState extends State<HomeScreen> with RouteAware {
   static const _recommendationCategory = 'app:recommendations';
   final _search = TextEditingController();
   final _scroll = ScrollController();
@@ -73,6 +73,53 @@ class _HomeScreenState extends State<HomeScreen> {
   final _recentTaps = RepeatTapGate();
   String _sourceSignature = '';
   bool _catalogLoadScheduled = false;
+  bool _routeVisible = true;
+  bool _metadataPending = false;
+  Timer? _routeResumeTimer;
+  PageRoute<dynamic>? _observedRoute;
+  List<Drama>? _visibleCache;
+  List<Drama>? _visibleInput;
+  String _visibleKey = '';
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    final route = ModalRoute.of(context);
+    if (route is PageRoute<dynamic> && route != _observedRoute) {
+      appRouteObserver.unsubscribe(this);
+      _observedRoute = route;
+      appRouteObserver.subscribe(this, route);
+    }
+  }
+
+  @override
+  void didPushNext() {
+    _routeVisible = false;
+    _routeResumeTimer?.cancel();
+    _cacheRefreshTimer?.cancel();
+    _updater.stopWatching();
+  }
+
+  @override
+  void didPopNext() {
+    _routeVisible = true;
+    _routeResumeTimer?.cancel();
+    _routeResumeTimer = Timer(const Duration(milliseconds: 320), () {
+      if (!mounted || !_routeVisible) return;
+      _sourcesChanged();
+      if (_metadataPending) {
+        _metadataPending = false;
+        setState(() {
+          _items = _items
+              .map(widget.repository.catalogUpdates.current)
+              .toList();
+          _browser.updateDramas(_items);
+        });
+      }
+      _updater.startWatching();
+      if (_changedSources.isNotEmpty) unawaited(_reloadUpdatedCache());
+    });
+  }
 
   List<SourceGroup> get _sourceGroups {
     final groups = SourceGroup.fromSources(widget.store.sources);
@@ -157,12 +204,12 @@ class _HomeScreenState extends State<HomeScreen> {
   }
 
   void _updateChanged() {
-    if (mounted) setState(() {});
+    if (mounted && _routeVisible) setState(() {});
   }
 
   /// 密码锁切换后可见站源会变，这里把当前站源归一化到仍然可见的站源。
   void _sourcesChanged() {
-    if (!mounted) return;
+    if (!mounted || !_routeVisible) return;
     final visible = widget.store.sources;
     final signature = visible.map((site) => site.id).join(',');
     if (signature == _sourceSignature) return;
@@ -189,6 +236,7 @@ class _HomeScreenState extends State<HomeScreen> {
   void _catalogUpdated(String source) {
     if (!mounted) return;
     _changedSources.add(source);
+    if (!_routeVisible) return;
     _cacheRefreshTimer?.cancel();
     _cacheRefreshTimer = Timer(const Duration(milliseconds: 100), () {
       unawaited(_reloadUpdatedCache());
@@ -196,11 +244,12 @@ class _HomeScreenState extends State<HomeScreen> {
   }
 
   Future<void> _reloadUpdatedCache() async {
-    if (_refreshingUpdatedCache) return;
+    if (_refreshingUpdatedCache || !_routeVisible) return;
     _refreshingUpdatedCache = true;
     final epoch = widget.store.profileEpoch;
     try {
       while (mounted &&
+          _routeVisible &&
           _changedSources.isNotEmpty &&
           epoch == widget.store.profileEpoch) {
         final sources = Set.of(_changedSources);
@@ -347,10 +396,7 @@ class _HomeScreenState extends State<HomeScreen> {
       ),
     );
     if (!mounted) return;
-    await _loadCategories();
-    if (mounted && (!_onlineSearch || _submittedQuery.isEmpty)) {
-      await _load(useCache: true);
-    }
+    _sourcesChanged();
   }
 
   Future<void> _chooseDisplayMode() async {
@@ -446,6 +492,8 @@ class _HomeScreenState extends State<HomeScreen> {
 
   @override
   void dispose() {
+    appRouteObserver.unsubscribe(this);
+    _routeResumeTimer?.cancel();
     _updater.removeListener(_updateChanged);
     _updater.dispose();
     _cacheRefreshTimer?.cancel();
@@ -492,6 +540,10 @@ class _HomeScreenState extends State<HomeScreen> {
   void _metadataChanged() {
     final drama = widget.repository.catalogUpdates.latest;
     if (!mounted || drama == null || !widget.store.allowsSource(drama.source)) {
+      return;
+    }
+    if (!_routeVisible) {
+      _metadataPending = true;
       return;
     }
     _browser.updateDrama(drama);
@@ -821,9 +873,19 @@ class _HomeScreenState extends State<HomeScreen> {
 
   List<Drama> get _visible {
     final query = _search.text.trim().toLowerCase();
-    return sortCatalog(
+    final view = widget.store.catalogView;
+    final key =
+        '${widget.store.profileEpoch}|$_sourceSignature|$_category|'
+        '$query|$_onlineSearch|$_hideVip|${view.sort}|${view.release}';
+    if (identical(_visibleInput, _items) &&
+        key == _visibleKey &&
+        _visibleCache != null) {
+      return _visibleCache!;
+    }
+    final allowed = widget.store.sources.map((source) => source.id).toSet();
+    final result = sortCatalog(
       _items.where((drama) {
-        if (!widget.store.allowsSource(drama.source)) return false;
+        if (!allowed.contains(drama.source)) return false;
         if (_category.startsWith('local:') &&
             categoryName(drama.category) != _category.substring(6)) {
           return false;
@@ -835,8 +897,11 @@ class _HomeScreenState extends State<HomeScreen> {
             query.isEmpty ||
             matchesDramaQuery(drama, query);
       }),
-      widget.store.catalogView,
+      view,
     );
+    _visibleInput = _items;
+    _visibleKey = key;
+    return _visibleCache = result;
   }
 
   @override

@@ -180,7 +180,7 @@ func hanxiaoquanPageCount(body, category string, page, count int) int {
 			maxPage = value
 		}
 	}
-	if maxPage > page {
+	if len(pattern.FindAllStringSubmatch(body, -1)) > 0 {
 		return maxPage
 	}
 	if count >= hanxiaoquanPageSize {

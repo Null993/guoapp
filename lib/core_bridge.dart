@@ -400,12 +400,13 @@ class NativeRepository extends AppRepository {
 
   @override
   Future<Drama?> supplementMetadata(Drama drama) async {
-    if (!(drama.source == 'hongguo' && drama.onlineDate.isEmpty ||
+    if (!(drama.source == 'hongguo' &&
+            (drama.onlineDate.isEmpty || drama.episodes <= 3) ||
         drama.source == 'huangdou' &&
             (drama.heat.isEmpty || drama.vipStatus == null))) {
       return null;
     }
-    final result = await _read('metadata', {
+    final result = await _read('metadata-${drama.id}', {
       'action': 'metadata',
       'drama': drama.toJson(),
     });

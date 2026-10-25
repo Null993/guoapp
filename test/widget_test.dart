@@ -187,7 +187,7 @@ void main() {
     expect(tester.takeException(), isNull);
   });
 
-  testWidgets('launch page replaces itself with the resolved player', (
+  testWidgets('launch page keeps its route when showing the resolved player', (
     tester,
   ) async {
     final repository = FixtureRepository();
@@ -210,7 +210,7 @@ void main() {
     await tester.pumpAndSettle();
     expect(find.text('launch player'), findsOneWidget);
     expect(find.text('正在进入播放'), findsNothing);
-    expect(find.byType(PlaybackLaunchScreen), findsNothing);
+    expect(find.byType(PlaybackLaunchScreen), findsOneWidget);
     expect(tester.takeException(), isNull);
   });
 

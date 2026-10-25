@@ -9,7 +9,7 @@ import (
 )
 
 func nativeNeedsExtraMetadata(drama nativeDrama) bool {
-	return drama.Source == sourceHongguo && drama.OnlineDate == "" ||
+	return drama.Source == sourceHongguo && (drama.OnlineDate == "" || drama.Episodes <= 3) ||
 		drama.Source == sourceHuangdou && (drama.Heat == "" || drama.VIP == nil)
 }
 

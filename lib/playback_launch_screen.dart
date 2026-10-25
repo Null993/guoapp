@@ -59,6 +59,7 @@ class _PlaybackLaunchScreenState extends State<PlaybackLaunchScreen> {
   late final int _profileEpoch;
   int _generation = 0;
   String? _error;
+  Widget? _player;
 
   @override
   void initState() {
@@ -93,7 +94,7 @@ class _PlaybackLaunchScreenState extends State<PlaybackLaunchScreen> {
         detail.episodes,
         warning: detail.warning,
       );
-      widget.repository.catalogUpdates.publish(drama, retryCover: true);
+      widget.repository.catalogUpdates.publish(drama);
       await saveUserChange(context, () => widget.store.refreshDrama(drama));
       if (!mounted ||
           generation != _generation ||
@@ -145,25 +146,22 @@ class _PlaybackLaunchScreenState extends State<PlaybackLaunchScreen> {
         return;
       }
       _requirePlaybackAccess();
-      Navigator.of(context).pushReplacement(
-        MaterialPageRoute<void>(
-          builder: (_) =>
-              widget.playerBuilder?.call(merged, index, position) ??
-              PlayerScreen(
-                detail: merged,
-                initialIndex: index,
-                initialPosition: position,
-                repository: widget.repository,
-                store: widget.store,
-              ),
-        ),
-      );
+      setState(() {
+        _player =
+            widget.playerBuilder?.call(merged, index, position) ??
+            PlayerScreen(
+              detail: merged,
+              initialIndex: index,
+              initialPosition: position,
+              repository: widget.repository,
+              store: widget.store,
+            );
+      });
     } catch (error) {
       if (!mounted || generation != _generation) return;
       setState(() => _error = error.toString());
       widget.repository.catalogUpdates.publish(
         widget.repository.catalogUpdates.current(widget.drama),
-        retryCover: true,
       );
     }
   }
@@ -176,28 +174,35 @@ class _PlaybackLaunchScreenState extends State<PlaybackLaunchScreen> {
   }
 
   @override
-  Widget build(BuildContext context) => Scaffold(
-    appBar: AppBar(title: Text(widget.drama.title)),
-    body: SafeArea(
-      top: false,
-      child: _error == null
-          ? const Center(
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  CircularProgressIndicator(),
-                  SizedBox(height: 16),
-                  Text('正在进入播放'),
-                ],
-              ),
-            )
-          : StatusPanel(
-              title: '暂时无法播放',
-              message: _error!,
-              onRetry: _load,
-              action: '重试',
-              icon: Icons.play_disabled_rounded,
-            ),
-    ),
+  Widget build(BuildContext context) => PopScope<void>(
+    onPopInvokedWithResult: (didPop, result) {
+      if (didPop) _generation++;
+    },
+    child:
+        _player ??
+        Scaffold(
+          appBar: AppBar(title: Text(widget.drama.title)),
+          body: SafeArea(
+            top: false,
+            child: _error == null
+                ? const Center(
+                    child: Column(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        CircularProgressIndicator(),
+                        SizedBox(height: 16),
+                        Text('正在进入播放'),
+                      ],
+                    ),
+                  )
+                : StatusPanel(
+                    title: '暂时无法播放',
+                    message: _error!,
+                    onRetry: _load,
+                    action: '重试',
+                    icon: Icons.play_disabled_rounded,
+                  ),
+          ),
+        ),
   );
 }

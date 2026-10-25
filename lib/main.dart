@@ -10,6 +10,7 @@ import 'package:window_manager/window_manager.dart';
 
 import 'core_bridge.dart';
 import 'app_layout.dart';
+import 'app_routes.dart';
 import 'app_orientation.dart';
 import 'app_theme.dart';
 import 'home_screen.dart';
@@ -49,7 +50,7 @@ Future<void> main(List<String> arguments) async {
     DiaryService.add('[Error] $error\n$stack');
     return false;
   };
-  DiaryService.add('[App] 应用启动，版本: 0.2.76+83, 平台: ${Platform.operatingSystem}');
+  DiaryService.add('[App] 应用启动，版本: 0.2.77+84, 平台: ${Platform.operatingSystem}');
   if (Platform.isAndroid) {
     await SystemChrome.setEnabledSystemUIMode(SystemUiMode.edgeToEdge);
     SystemChrome.setSystemUIOverlayStyle(AppTheme.systemBars(Brightness.dark));
@@ -242,6 +243,7 @@ class DuanjuApp extends StatelessWidget {
   );
 
   Widget _application() => MaterialApp(
+    navigatorObservers: [appRouteObserver],
     navigatorKey: navigatorKey,
     title: appName,
     debugShowCheckedModeBanner: false,
