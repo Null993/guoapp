@@ -37,21 +37,25 @@ type hongguoCatalogState struct {
 }
 
 type hongguoAppClient struct {
-	mu              sync.Mutex
-	catalogMu       sync.Mutex
-	baseURL         string
-	state           hongguoCatalogState
-	webDetails      map[string]hongguoDetailEntry
-	webPending      map[string]*hongguoDetailCall
-	playbackPending map[string]*hongguoDetailCall
-	details         map[string]hongguoDetailEntry
-	pending         map[string]*hongguoDetailCall
-	searches        map[string]hongguoSearchEntry
-	searchPending   map[string]*hongguoSearchCall
-	suggestions     map[string]hongguoSuggestionEntry
-	suggestPending  map[string]*hongguoSuggestionCall
-	danmaku         map[string]hongguoDanmakuCacheEntry
-	danmakuPending  map[string]*hongguoDanmakuCall
+	mu                sync.Mutex
+	registrationGate  chan struct{}
+	registration      *hongguoRegistration
+	registrationSaved bool
+	registrationError error
+	catalogMu         sync.Mutex
+	baseURL           string
+	state             hongguoCatalogState
+	webDetails        map[string]hongguoDetailEntry
+	webPending        map[string]*hongguoDetailCall
+	playbackPending   map[string]*hongguoDetailCall
+	details           map[string]hongguoDetailEntry
+	pending           map[string]*hongguoDetailCall
+	searches          map[string]hongguoSearchEntry
+	searchPending     map[string]*hongguoSearchCall
+	suggestions       map[string]hongguoSuggestionEntry
+	suggestPending    map[string]*hongguoSuggestionCall
+	danmaku           map[string]hongguoDanmakuCacheEntry
+	danmakuPending    map[string]*hongguoDanmakuCall
 }
 
 func (downloader *Downloader) hongguoClient() *hongguoAppClient {
@@ -63,6 +67,12 @@ func (downloader *Downloader) hongguoClient() *hongguoAppClient {
 			webDetails: map[string]hongguoDetailEntry{}, webPending: map[string]*hongguoDetailCall{}, playbackPending: map[string]*hongguoDetailCall{},
 			searches: map[string]hongguoSearchEntry{}, searchPending: map[string]*hongguoSearchCall{},
 			suggestions: map[string]hongguoSuggestionEntry{}, suggestPending: map[string]*hongguoSuggestionCall{},
+		}
+		identity, err := loadHongguoRegistration(downloader.cfg.dataDir)
+		downloader.hongguo.registration, downloader.hongguo.registrationError = identity, err
+		if identity != nil {
+			downloader.hongguo.registrationSaved = true
+			downloader.hongguo.state.DeviceID, downloader.hongguo.state.InstallID = identity.DeviceID, identity.InstallID
 		}
 	})
 	return downloader.hongguo
@@ -100,6 +110,9 @@ func (downloader *Downloader) restoreHongguoCatalog(state *hongguoCatalogState) 
 	client.mu.Lock()
 	defer client.mu.Unlock()
 	if len(client.state.Feeds) == 0 {
+		if client.registration != nil {
+			cloned.DeviceID, cloned.InstallID = client.registration.DeviceID, client.registration.InstallID
+		}
 		client.state = *cloned
 	}
 }
@@ -132,12 +145,20 @@ func hongguoCatalogHasMore(state *hongguoCatalogState) bool {
 }
 
 func (downloader *Downloader) hongguoAppRequest(ctx context.Context, method, path string, extra url.Values, payload any) (map[string]any, error) {
+	client := downloader.hongguoClient()
+	client.mu.Lock()
+	base := client.baseURL
+	client.mu.Unlock()
+	return downloader.hongguoAppRequestAt(ctx, base, method, path, extra, payload)
+}
+
+func (downloader *Downloader) hongguoAppRequestAt(ctx context.Context, base, method, path string, extra url.Values, payload any) (map[string]any, error) {
 	if path == "/novel/player/video_detail/v1/" || path == "/reading/distribution/category/landpage/v/" {
 		ctx = context.WithValue(ctx, automaticReadOnlyKey{}, true)
 	}
 	client := downloader.hongguoClient()
 	client.mu.Lock()
-	base, deviceID, installID := client.baseURL, client.state.DeviceID, client.state.InstallID
+	deviceID, installID := client.state.DeviceID, client.state.InstallID
 	client.mu.Unlock()
 	query := url.Values{
 		"aid": {"8662"}, "app_name": {"novelread"}, "version_code": {"73532"}, "version_name": {"7.3.5.32"},
@@ -225,14 +246,20 @@ func (downloader *Downloader) hongguoAppRequest(ctx context.Context, method, pat
 			continue
 		}
 		if response.StatusCode != http.StatusOK {
-			lastErr = fmt.Errorf("红果 App 接口 HTTP %d", response.StatusCode)
+			lastErr = downloader.catalogResponseError(request, response, content)
 			if response.StatusCode >= 400 && response.StatusCode < 500 {
 				return nil, lastErr
 			}
 			continue
 		}
-		if len(content) == 0 || len(content) > providerMaxBodyBytes {
-			return nil, errors.New("红果 App 接口未返回有效数据")
+		if len(content) > providerMaxBodyBytes {
+			return nil, errors.New("红果 App 接口响应过大")
+		}
+		if len(content) == 0 {
+			if response.Header.Get("Retry-After") != "" {
+				return nil, errors.New("红果 App 返回空响应并要求稍后重试")
+			}
+			return nil, errHongguoEmptyPlayback
 		}
 		var result map[string]any
 		decoder := json.NewDecoder(bytes.NewReader(content))

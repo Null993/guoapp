@@ -20,6 +20,7 @@ import 'widgets.dart';
 import 'resource_settings_screen.dart';
 import 'lan_screen.dart';
 import 'diary_service.dart';
+import 'app_update_screen.dart';
 
 String storageSize(int bytes) {
   if (bytes < 0) return '暂不可用';
@@ -124,6 +125,22 @@ class _SettingsScreenState extends State<SettingsScreen> {
           child: ListView(
             padding: const EdgeInsets.all(16),
             children: [
+              ListTile(
+                key: const ValueKey('check-app-update'),
+                leading: const Icon(Icons.system_update_outlined),
+                title: const Text('检查更新'),
+                subtitle: const Text('从 GitHub 获取已发布的新版本'),
+                trailing: const Icon(Icons.chevron_right_rounded),
+                onTap: () => Navigator.push(
+                  context,
+                  MaterialPageRoute<void>(
+                    builder: (_) => AppUpdateScreen(
+                      repository: widget.repository,
+                      store: widget.store,
+                    ),
+                  ),
+                ),
+              ),
               ListTile(
                 key: const ValueKey('lan-settings'),
                 leading: const Icon(Icons.devices_rounded),

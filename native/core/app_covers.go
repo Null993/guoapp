@@ -83,6 +83,11 @@ func newNativeCoverCache(directory string, downloader *Downloader) *nativeCoverC
 }
 
 func nativeCoverReferer(downloader *Downloader, source, address string) string {
+	if source == sourceHuangguoVideo {
+		if parsed, err := url.Parse(address); err == nil && huangguoVideoRouteHost(parsed.Hostname()) {
+			return parsed.Scheme + "://" + parsed.Host + "/"
+		}
+	}
 	if source == sourceCloudFront {
 		if parsed, err := url.Parse(address); err == nil && (strings.HasSuffix(strings.ToLower(parsed.Hostname()), ".zdmhyg.cn") || strings.EqualFold(parsed.Hostname(), "pic.tuafjz.cn")) {
 			return downloader.providerBaseURL(sourceHuangguoAI) + "/"
@@ -109,6 +114,9 @@ func validNativeCoverURL(address *url.URL) bool {
 
 func (cache *nativeCoverCache) loadAddress(ctx context.Context, drama nativeDrama, force bool) (string, error) {
 	drama.Cover = repairLegacyCoverURL(drama)
+	if canonicalProviderSource(drama.Source) == sourceHuangguoVideo || sourceFromDramaID(drama.ID) == sourceHuangguoVideo {
+		drama.Cover = cache.downloader.huangguoVideoAssetURL(drama.Cover)
+	}
 	address, err := url.Parse(drama.Cover)
 	if err != nil || !validNativeCoverURL(address) {
 		return "", errors.New("海报地址无效")

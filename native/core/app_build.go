@@ -4,7 +4,8 @@ import "errors"
 
 var buildAllSources = "false"
 
-const nativeAppVersion = "0.2.78"
+const nativeAppVersion = "0.2.82"
+const nativeAppBuild = 89
 
 var errNativeBuildSource = errors.New("当前版本不包含此站源")
 

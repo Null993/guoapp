@@ -124,6 +124,7 @@ void main() {
     SharedPreferences.setMockInitialValues({});
     final store = LocalStore(await SharedPreferences.getInstance());
     addTearDown(store.dispose);
+    await store.disableSourceGate();
     await store.setSource(source);
     await tester.pumpWidget(DuanjuApp(repository: repository, store: store));
     await tester.pumpAndSettle();

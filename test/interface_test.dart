@@ -90,6 +90,7 @@ void main() {
     viewport(tester, const Size(390, 844));
     final repository = InterfaceRepository();
     final store = await localStore();
+    await store.disableSourceGate();
     await tester.pumpWidget(DuanjuApp(repository: repository, store: store));
     await tester.pumpAndSettle();
     Future<void> select(String name) async {

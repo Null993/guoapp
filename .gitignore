@@ -14,6 +14,7 @@ windows/runner/duanju_core.dll
 __pycache__/
 *.pyc
 key.properties
+hongguo-device.json
 .DS_Store
 .idea/
 *.iml

@@ -50,7 +50,7 @@ Future<void> main(List<String> arguments) async {
     DiaryService.add('[Error] $error\n$stack');
     return false;
   };
-  DiaryService.add('[App] 应用启动，版本: 0.2.78+85, 平台: ${Platform.operatingSystem}');
+  DiaryService.add('[App] 应用启动，版本: 0.2.82+89, 平台: ${Platform.operatingSystem}');
   if (Platform.isAndroid) {
     await SystemChrome.setEnabledSystemUIMode(SystemUiMode.edgeToEdge);
     SystemChrome.setSystemUIOverlayStyle(AppTheme.systemBars(Brightness.dark));
@@ -65,12 +65,21 @@ Future<void> main(List<String> arguments) async {
     return;
   }
   final device = await AppDevice.detect();
-  runApp(AppBootstrap(device: device));
+  final updateToken =
+      arguments.length == 2 && arguments.first == '--update-token'
+      ? arguments[1]
+      : '';
+  runApp(AppBootstrap(device: device, updateToken: updateToken));
 }
 
 class AppBootstrap extends StatefulWidget {
-  const AppBootstrap({super.key, this.device = const AppDevice()});
+  const AppBootstrap({
+    super.key,
+    this.device = const AppDevice(),
+    this.updateToken = '',
+  });
   final AppDevice device;
+  final String updateToken;
   @override
   State<AppBootstrap> createState() => _AppBootstrapState();
 }
@@ -195,6 +204,18 @@ class _AppBootstrapState extends State<AppBootstrap>
             );
           };
         });
+        if (widget.updateToken.isNotEmpty) {
+          WidgetsBinding.instance.addPostFrameCallback((_) {
+            unawaited(
+              repository
+                  .appUpdate('confirmLaunch', {'token': widget.updateToken})
+                  .catchError((Object failure) {
+                    DiaryService.add('[Update] 启动确认失败: $failure');
+                    return <String, dynamic>{};
+                  }),
+            );
+          });
+        }
       }
     } catch (failure) {
       if (mounted) {

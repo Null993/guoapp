@@ -31,6 +31,7 @@ class SourceSyncTests(unittest.TestCase):
             'android/gradlew', 'android/gradle/wrapper/gradle-wrapper.jar',
             'android/app/src/main/jniLibs/arm64-v8a/libduanju_core.so',
             'native/vendor/example/dependency.go', 'native/build/core.dll',
+            'native/hongguo-device.json',
             'windows/runner/duanju_core.dll', 'windows/runner/duanju_core.h',
             'windows/flutter/ephemeral/config.cmake',
             'windows/flutter/generated_plugins.cmake',

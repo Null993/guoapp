@@ -16,6 +16,15 @@ import 'fixtures.dart';
 import 'player_fixtures.dart';
 import 'remote_test_helpers.dart';
 
+class DownloadRoutes extends NavigatorObserver {
+  final pushed = <Route<dynamic>>[];
+
+  @override
+  void didPush(Route<dynamic> route, Route<dynamic>? previousRoute) {
+    pushed.add(route);
+  }
+}
+
 class DownloadRepository extends FixtureRepository {
   final commands = <String>[];
   List<DownloadJob> jobs = [];
@@ -286,6 +295,7 @@ void main() {
     size(tester, const Size(390, 844));
     final repository = DownloadRepository();
     final store = await makeStore();
+    await store.disableSourceGate();
     final drama = const Drama(
       id: 'dsd:100',
       source: 'dsd',
@@ -295,17 +305,28 @@ void main() {
     repository.detailOverride = DramaDetail(drama, [
       Episode({'id': '1', 'currentEpisode': 1, 'vip': true}, 1),
     ]);
+    final routes = DownloadRoutes();
     await tester.pumpWidget(
       MaterialApp(
         theme: ThemeData.dark(),
+        navigatorObservers: [routes],
         home: DetailScreen(drama: drama, repository: repository, store: store),
       ),
     );
     await tester.pumpAndSettle();
+    await tester.tap(find.text('展开'));
+    await tester.pumpAndSettle();
+    await tester.ensureVisible(find.byKey(const ValueKey('episode-1')));
     await tester.tap(find.byKey(const ValueKey('episode-1')));
-    await tester.pump();
     expect(find.text('这是一集 VIP 内容'), findsNothing);
-    expect(find.text('正在准备播放'), findsOneWidget);
+    expect(routes.pushed.last, isA<MaterialPageRoute<void>>());
+    final route = routes.pushed.last as MaterialPageRoute<void>;
+    final page = route.builder(tester.element(find.byType(DetailScreen)));
+    expect(page, isA<PlayerScreen>());
+    expect((page as PlayerScreen).detail.drama.source, 'dsd');
+    expect(page.detail.episodes.single.vip, isTrue);
+    await tester.pumpWidget(const SizedBox.shrink());
+    await tester.pumpAndSettle();
     expect(tester.takeException(), isNull);
   });
 

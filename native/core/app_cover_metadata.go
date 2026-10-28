@@ -86,7 +86,7 @@ func (d *Downloader) nativeCoverAddress(ctx context.Context, drama nativeDrama) 
 			route = "/" + parts[0] + "/" + url.PathEscape(parts[1])
 		}
 		pageURL := d.providerBaseURL(source) + route
-		body, err := d.fetchProviderText(context.WithValue(ctx, providerTextNoCacheKey{}, true), pageURL, d.providerBaseURL(source)+"/")
+		body, pageURL, err := d.fetchProviderTextPage(context.WithValue(ctx, providerTextNoCacheKey{}, true), pageURL, d.providerBaseURL(source)+"/")
 		if err != nil {
 			return "", err
 		}

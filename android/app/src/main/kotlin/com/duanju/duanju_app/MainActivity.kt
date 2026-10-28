@@ -27,10 +27,45 @@ import android.provider.Settings
 import android.webkit.CookieManager
 import android.webkit.WebView
 import android.widget.FrameLayout
+import androidx.core.content.FileProvider
+import java.io.File
+import java.security.MessageDigest
 import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.plugin.common.MethodChannel
 
 class MainActivity : FlutterActivity() {
+    @Suppress("DEPRECATION")
+    private fun installAppUpdate(path: String): String {
+        val source = File(path).canonicalFile
+        val updates = File(filesDir, "updates").canonicalFile
+        require(source.path.startsWith(updates.path + File.separator) && source.isFile && source.extension == "apk") { "安装包路径无效" }
+        val flags = if (Build.VERSION.SDK_INT >= 28) PackageManager.GET_SIGNING_CERTIFICATES else PackageManager.GET_SIGNATURES
+        val candidate = packageManager.getPackageArchiveInfo(source.path, flags) ?: error("无法读取 APK 信息")
+        val installed = packageManager.getPackageInfo(packageName, flags)
+        require(candidate.packageName == packageName) { "APK 包名不一致，已拒绝安装" }
+        val candidateCode = if (Build.VERSION.SDK_INT >= 28) candidate.longVersionCode else candidate.versionCode.toLong()
+        val installedCode = if (Build.VERSION.SDK_INT >= 28) installed.longVersionCode else installed.versionCode.toLong()
+        require(candidateCode > installedCode) { "APK 版本号未高于当前版本，已拒绝降级或重复安装" }
+        fun certificates(info: android.content.pm.PackageInfo): Set<String> {
+            val signatures = if (Build.VERSION.SDK_INT >= 28) info.signingInfo?.apkContentsSigners else info.signatures
+            return signatures.orEmpty().map { signature ->
+                MessageDigest.getInstance("SHA-256").digest(signature.toByteArray()).joinToString("") { "%02x".format(it) }
+            }.toSet()
+        }
+        val currentCertificates = certificates(installed)
+        require(currentCertificates.isNotEmpty() && certificates(candidate) == currentCertificates) { "APK 签名与当前应用不一致，请使用相同签名发布的安装包" }
+        if (!packageManager.canRequestPackageInstalls()) {
+            startActivity(Intent(Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES, Uri.parse("package:$packageName")))
+            return "permission_required"
+        }
+        val directory = File(cacheDir, "app_updates").apply { mkdirs() }
+        val target = File(directory, "update.apk")
+        source.copyTo(target, overwrite = true)
+        val uri = FileProvider.getUriForFile(this, "$packageName.updates", target)
+        startActivity(Intent(Intent.ACTION_VIEW).setDataAndType(uri, "application/vnd.android.package-archive")
+            .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION))
+        return "installer_opened"
+    }
     private var headroomReadAt = 0L
     private var thermalHeadroom: Double? = null
     private var deviceChannel: MethodChannel? = null
@@ -127,6 +162,10 @@ class MainActivity : FlutterActivity() {
             .also { channel ->
                 channel.setMethodCallHandler { call, result ->
                     when (call.method) {
+                        "appUpdateInfo" -> result.success(mapOf("abis" to Build.SUPPORTED_ABIS.toList()))
+                        "installAppUpdate" -> runCatching {
+                            installAppUpdate(requireNotNull(call.argument<String>("path")))
+                        }.onSuccess { result.success(it) }.onFailure { result.error("app_update_install", it.message, null) }
                         "deviceInfo" -> {
                             val version = packageManager.getPackageInfo(packageName, 0).versionName
                             result.success(mapOf("television" to isTelevisionDevice(), "version" to version))

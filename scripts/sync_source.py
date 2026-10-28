@@ -28,7 +28,7 @@ EXCLUDED_DIRECTORIES = {
     'flutter-sdk', 'ndk', 'toolchains',
 }
 EXCLUDED_NAMES = {
-    '.DS_Store', 'Thumbs.db', 'local.properties', 'key.properties',
+    '.DS_Store', 'Thumbs.db', 'local.properties', 'key.properties', 'hongguo-device.json',
     '.packages', 'GeneratedPluginRegistrant.java', 'Generated.xcconfig',
     'flutter_export_environment.sh', 'GeneratedPluginRegistrant.h', 'GeneratedPluginRegistrant.m',
 }

@@ -68,6 +68,10 @@ class AppFailure implements Exception {
 }
 
 abstract class AppRepository {
+  Future<Map<String, dynamic>> appUpdate(
+    String command, [
+    Map<String, dynamic> input = const {},
+  ]) async => throw AppFailure('当前环境不支持应用更新');
   Future<Map<String, dynamic>> lan(
     String command,
     Map<String, dynamic> payload,
@@ -242,6 +246,17 @@ class NativeRepository extends AppRepository {
   final _readOwner = DateTime.now().microsecondsSinceEpoch.toString();
   int _readSequence = 0;
   final _activeReads = <String, int>{};
+
+  @override
+  Future<Map<String, dynamic>> appUpdate(
+    String command, [
+    Map<String, dynamic> input = const {},
+  ]) {
+    if ({'download', 'install', 'rollback', 'cancel'}.contains(command)) {
+      _adminPermission();
+    }
+    return _call({'action': 'appUpdate', 'command': command, 'update': input});
+  }
 
   @override
   Future<Map<String, dynamic>> lan(
@@ -613,6 +628,7 @@ class NativeRepository extends AppRepository {
             'updateSystemProxy',
             'clearAllSourceAccess',
           }.contains(action) ||
+          action == 'appUpdate' && input['command'] == 'confirmLaunch' ||
           action == 'workLease' && input['command'] == 'end' ||
           action == 'lan' &&
               {
@@ -698,7 +714,10 @@ class NativeRepository extends AppRepository {
       final body = jsonEncode(input);
       final encoded = await Isolate.run(() => _nativeRequest(body)).timeout(
         Duration(
-          seconds: action == 'moveDownloads'
+          seconds:
+              action == 'moveDownloads' ||
+                  action == 'appUpdate' &&
+                      {'install', 'rollback'}.contains(input['command'])
               ? 620
               : action == 'danmaku'
               ? 15

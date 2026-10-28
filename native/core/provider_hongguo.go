@@ -178,6 +178,20 @@ func (d *Downloader) resolveHongguoMedia(ctx context.Context, task Task) (provid
 	if err := ctx.Err(); err != nil {
 		return providerMedia{}, err
 	}
+	if sourceRouteDenied(nativeErr) {
+		return providerMedia{}, nativeErr
+	}
+	media, alternateErr := d.resolveHongguoAppMediaAt(ctx, videoID, hongguoAlternateAppBaseURL)
+	if alternateErr == nil {
+		d.recordDiagnostic(diagnosticEvent{Event: "hongguo.backup_official", Level: "info", Source: sourceHongguo, Host: "api3-normal-sinfonlineb.fqnovel.com", Message: "主取流不可用，已使用官方备用 HTTPS 接口取得所选分集"})
+		return media, nil
+	}
+	if err := ctx.Err(); err != nil {
+		return providerMedia{}, err
+	}
+	if sourceRouteDenied(alternateErr) {
+		return providerMedia{}, alternateErr
+	}
 	media, pageErr := d.resolveHongguoWebMedia(ctx, seriesID, videoID)
 	if pageErr == nil {
 		return media, nil
@@ -189,7 +203,7 @@ func (d *Downloader) resolveHongguoMedia(ctx context.Context, task Task) (provid
 	if apiErr == nil {
 		return media, nil
 	}
-	return providerMedia{}, fmt.Errorf("红果 App 取流失败：%v；网页取流失败：%v；备用取流失败：%w", publicError(nativeErr), publicError(pageErr), apiErr)
+	return providerMedia{}, fmt.Errorf("红果 App 取流失败：%v；官方备用取流失败：%v；网页取流失败：%v；第三方备用取流失败：%w", publicError(nativeErr), publicError(alternateErr), publicError(pageErr), apiErr)
 }
 
 func (d *Downloader) resolveHongguoWebMedia(ctx context.Context, seriesID, videoID string) (providerMedia, error) {

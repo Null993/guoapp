@@ -107,7 +107,7 @@ func canonicalProviderSource(source string) string {
 	switch strings.ToLower(strings.TrimSpace(source)) {
 	case "huangguo", "huangguoai", "huangguoai.com":
 		return sourceHuangguoAI
-	case "huangguo-video", "huangguo.video":
+	case "huangguo-video", "huangguo.video", "huangguoai.fit":
 		return sourceHuangguoVideo
 	case "huangdou", "tideember.cc", "xqjurgek.top":
 		return sourceHuangdou
@@ -314,8 +314,8 @@ func (d *Downloader) fetchHuangguoVideoDetail(ctx context.Context, sourceID stri
 	if !strings.HasPrefix(detailPath, "series/") && !strings.HasPrefix(detailPath, "video/") {
 		detailPath = "series/" + detailPath
 	}
-	detailURL := strings.TrimRight(huangguoVideoBaseURL, "/") + "/" + detailPath
-	body, err := d.fetchProviderText(ctx, detailURL, huangguoVideoBaseURL+"/")
+	detailURL := d.providerBaseURL(sourceHuangguoVideo) + "/" + detailPath
+	body, detailURL, err := d.fetchProviderTextPage(ctx, detailURL, d.providerBaseURL(sourceHuangguoVideo)+"/")
 	if err != nil {
 		return Drama{}, nil, err
 	}
@@ -415,6 +415,9 @@ func (d *Downloader) fetchProviderText(ctx context.Context, rawURL, referer stri
 			}
 			resp, err := d.doCatalogRequestWithTimeout(req, timeout)
 			if err != nil {
+				if providerSourceForURL(rawURL) == sourceHuangguoVideo && sourceRouteDenied(err) {
+					return "", err
+				}
 				note(err)
 				var backoff *requestBackoff
 				if errors.As(err, &backoff) {
@@ -437,7 +440,11 @@ func (d *Downloader) fetchProviderText(ctx context.Context, rawURL, referer stri
 				continue
 			}
 			if resp.StatusCode < 200 || resp.StatusCode >= 300 || catalogResponseBlockReason(resp, body) != "" {
-				note(d.catalogResponseError(req, resp, body))
+				responseErr := d.catalogResponseError(req, resp, body)
+				if providerSourceForURL(rawURL) == sourceHuangguoVideo && sourceRouteDenied(responseErr) {
+					return "", responseErr
+				}
+				note(responseErr)
 				if catalogResponseBlockReason(resp, body) != "" || resp.StatusCode >= 400 && resp.StatusCode < 500 && resp.StatusCode != 408 {
 					break
 				}
@@ -471,6 +478,9 @@ func (d *Downloader) fetchProviderText(ctx context.Context, rawURL, referer stri
 
 func providerURLCandidates(rawURL string) []string {
 	u, err := url.Parse(rawURL)
+	if err == nil && huangguoVideoRouteHost(u.Hostname()) {
+		return []string{rehostProviderURL(u, huangguoVideoDomesticURL), rehostProviderURL(u, huangguoVideoBaseURL)}
+	}
 	if err != nil || u.Hostname() != "huangguoai.com" {
 		return []string{rawURL}
 	}

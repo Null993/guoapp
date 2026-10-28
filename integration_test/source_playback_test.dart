@@ -33,11 +33,31 @@ String safeError(Object error) => error.toString().replaceAllMapped(
 
 void main() {
   final binding = IntegrationTestWidgetsFlutterBinding.ensureInitialized();
+  const failureControl = String.fromEnvironment('SOURCE_FAILURE_CONTROL');
+  Future<void> setPrimaryFailure(bool enabled) async {
+    if (failureControl.isEmpty) return;
+    final uri = Uri.parse(failureControl);
+    expect(uri.scheme, 'http');
+    expect(uri.host, anyOf('127.0.0.1', '10.0.2.2'));
+    final client = HttpClient()..connectionTimeout = const Duration(seconds: 3);
+    client.findProxy = (_) => 'DIRECT';
+    try {
+      final request = await client.getUrl(
+        uri.replace(path: '/fault', queryParameters: {'enabled': '$enabled'}),
+      );
+      final response = await request.close();
+      await response.drain<void>();
+      expect(response.statusCode, 200);
+    } finally {
+      client.close(force: true);
+    }
+  }
+
   final selected = const String.fromEnvironment(
     'SOURCE_IDS',
   ).split(',').where((id) => id.isNotEmpty).toSet();
   final report = <String, dynamic>{
-    'version': '0.2.78+85',
+    'version': '0.2.82+89',
     'platform': Platform.operatingSystem,
     'startedAt': DateTime.now().toUtc().toIso8601String(),
     'requiredPerSource': 3,
@@ -92,6 +112,7 @@ void main() {
     SharedPreferences.setMockInitialValues({});
     store = LocalStore(await SharedPreferences.getInstance());
     storeInitialized = true;
+    await store.disableSourceGate();
     repository = NativeRepository(background: true);
     await repository.initialize();
     final mode = report['proxyMode'] as String;
@@ -257,10 +278,25 @@ void main() {
           final detail = await repository.detail(drama);
           attempt['title'] = detail.drama.title;
           if (detail.episodes.isEmpty) throw StateError('No episodes');
-          final episode = detail.episodes.first;
+          const requestedEpisode = int.fromEnvironment(
+            'SOURCE_EPISODE_NUMBER',
+            defaultValue: 0,
+          );
+          final episode = requestedEpisode > 0
+              ? detail.episodes.firstWhere(
+                  (episode) => episode.number == requestedEpisode,
+                  orElse: () => throw StateError(
+                    'Requested episode $requestedEpisode not returned',
+                  ),
+                )
+              : detail.episodes.first;
           attempt['episode'] = episode.number;
           attempt['episodeId'] = episode.id;
           attempt['stage'] = 'playback';
+          if (failureControl.isNotEmpty && source.id == 'hongguo') {
+            await setPrimaryFailure(true);
+            attempt['primaryFailureInjected'] = true;
+          }
           if (Platform.isWindows) await windowManager.focus();
           await tester.pumpWidget(
             MaterialApp(
@@ -286,6 +322,7 @@ void main() {
           final playback = Stopwatch()..start();
           VideoController? video;
           int? initialPosition;
+          int? previousPosition;
           var samples = 0;
           var rendered = false;
           while (playback.elapsed < const Duration(seconds: 65)) {
@@ -332,7 +369,10 @@ void main() {
                 !state.buffering) {
               final position = state.position.inMilliseconds;
               initialPosition ??= position;
-              if (position > initialPosition) samples++;
+              if (previousPosition != null && position > previousPosition) {
+                samples++;
+              }
+              previousPosition = position;
               if (samples >= 3 && position - initialPosition >= 5000) {
                 attempt.addAll({
                   'success': true,
@@ -384,6 +424,9 @@ void main() {
             }
           }
           await repository.cancelPlayback();
+          if (failureControl.isNotEmpty && source.id == 'hongguo') {
+            await setPrimaryFailure(false);
+          }
           await save();
           debugPrint(
             'SOURCE_PLAYBACK ${source.id} ${drama.id} success=${attempt["success"]} total=${result["successCount"]}/3 elapsed=${attempt["elapsedMs"]}',

@@ -14,6 +14,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"time"
 )
 
 const hongguoPlaybackAPI = "https://djapi.999888456.xyz/api/hongguo/play"
@@ -45,6 +46,12 @@ func (d *Downloader) resolveHongguoPlaybackAPI(ctx context.Context, seriesID, vi
 	if !hongguoNumericID.MatchString(seriesID) || !hongguoNumericID.MatchString(videoID) {
 		return providerMedia{}, errors.New("红果播放请求缺少有效的剧集 ID")
 	}
+	d.hongguoBackupMu.Lock()
+	blocked, previous := time.Now().Before(d.hongguoBackupRetryAt), d.hongguoBackupError
+	d.hongguoBackupMu.Unlock()
+	if blocked {
+		return providerMedia{}, fmt.Errorf("第三方备用 HTTPS 服务仍在故障冷却期，官方备用接口已优先尝试：%w", previous)
+	}
 	reference, err := json.Marshal(hongguoPlaybackReference{ContentType: 1004, SeriesID: seriesID, VideoID: videoID, VideoPlatform: 3})
 	if err != nil {
 		return providerMedia{}, err
@@ -52,6 +59,12 @@ func (d *Downloader) resolveHongguoPlaybackAPI(ctx context.Context, seriesID, vi
 	query := url.Values{"id": {base64.StdEncoding.EncodeToString(reference)}}
 	body, err := d.fetchProviderText(ctx, hongguoPlaybackAPI+"?"+query.Encode(), hongguoBaseURL+"/")
 	if err != nil {
+		if ctx.Err() == nil && strings.Contains(strings.ToLower(err.Error()), "no application protocol") {
+			d.hongguoBackupMu.Lock()
+			d.hongguoBackupRetryAt, d.hongguoBackupError = time.Now().Add(5*time.Minute), err
+			d.hongguoBackupMu.Unlock()
+			d.recordDiagnostic(diagnosticEvent{Event: "hongguo.backup_tls_failed", Level: "warning", Source: sourceHongguo, Host: "djapi.999888456.xyz", Message: "第三方备用服务 TLS 协商失败，5分钟内不重复连接；保留证书校验与HTTPS"})
+		}
 		return providerMedia{}, err
 	}
 	decoded, err := decodeHongguoPlaybackResponse(body)

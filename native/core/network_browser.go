@@ -129,7 +129,7 @@ func (transport *sourceBrowserTransport) requestSource(request *http.Request) st
 
 func huangguoBrowserHost(host string) bool {
 	host = strings.TrimSuffix(strings.ToLower(host), ".")
-	return host == "huangguo.video" || strings.HasSuffix(host, ".huangguo.video")
+	return host == "huangguoai.fit" || host == "huangguo.video" || strings.HasSuffix(host, ".huangguo.video")
 }
 
 func (transport *sourceBrowserTransport) createClient(proxy, host, address string) (browserHTTPClient, error) {
@@ -221,7 +221,7 @@ func huangguoBrowserHeaders(request *http.Request) fhttp.Header {
 	if referer := request.Header.Get("Referer"); referer == "" {
 		headers["sec-fetch-site"] = []string{"none"}
 	} else if parsed, err := url.Parse(referer); err == nil && !strings.EqualFold(parsed.Host, request.URL.Host) {
-		if parsed.Scheme == request.URL.Scheme && huangguoBrowserHost(parsed.Hostname()) && huangguoBrowserHost(request.URL.Hostname()) {
+		if parsed.Scheme == request.URL.Scheme && (parsed.Hostname() == "huangguo.video" || strings.HasSuffix(parsed.Hostname(), ".huangguo.video")) && (request.URL.Hostname() == "huangguo.video" || strings.HasSuffix(request.URL.Hostname(), ".huangguo.video")) {
 			headers["sec-fetch-site"] = []string{"same-site"}
 		} else {
 			headers["sec-fetch-site"] = []string{"cross-site"}

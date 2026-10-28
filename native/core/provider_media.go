@@ -28,7 +28,7 @@ func (d *Downloader) providerBaseURL(source string) string {
 	case sourceHuangguoAI:
 		configured, fallback = d.cfg.HuangguoAIURL, huangguoAIBaseURL
 	case sourceHuangguoVideo:
-		configured, fallback = d.cfg.HuangguoVideoURL, huangguoVideoBaseURL
+		configured, fallback = d.cfg.HuangguoVideoURL, huangguoVideoDomesticURL
 	case sourceHuangdou:
 		configured, fallback = d.cfg.HuangdouURL, huangdouBaseURL
 	case sourceHongguo:
@@ -60,7 +60,7 @@ func providerSourceForURL(raw string) string {
 	switch {
 	case host == "huangguoai.com" || strings.HasSuffix(host, ".ediayikma.cc") || strings.HasSuffix(host, ".agdkczeyx.cc"):
 		return sourceHuangguoAI
-	case host == "huangguo.video":
+	case huangguoVideoRouteHost(host):
 		return sourceHuangguoVideo
 	case host == "tideember.cc" || host == "xqjurgek.top":
 		return sourceHuangdou
@@ -106,6 +106,9 @@ func (d *Downloader) providerURLCandidates(raw string) []string {
 	add(rehostProviderURL(parsed, preferred))
 	configured := d.providerBaseURL(source)
 	add(rehostProviderURL(parsed, configured))
+	if source == sourceHuangguoVideo && d.cfg.HuangguoVideoURL != "" {
+		return candidates
+	}
 	if providerSourceForURL(configured) == "" {
 		return candidates
 	}

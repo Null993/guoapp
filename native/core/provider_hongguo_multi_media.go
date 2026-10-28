@@ -5,7 +5,6 @@ import (
 	"context"
 	"crypto/aes"
 	"crypto/cipher"
-	"crypto/rand"
 	"crypto/sha512"
 	"encoding/json"
 	"errors"
@@ -69,18 +68,6 @@ func hongguoPyEncode(raw string) string {
 	return out.String()
 }
 
-func hongguoPlayerLocalID() string {
-	raw := make([]byte, 6)
-	if _, err := rand.Read(raw); err != nil {
-		panic("hongguo: local id")
-	}
-	value := uint64(0)
-	for _, b := range raw {
-		value = value<<8 | uint64(b)
-	}
-	return strconv.FormatUint(1_000_000_000_000_000+value, 10)
-}
-
 func hongguoDeviceQuery(khronos int64, rticket int64, iid, deviceID string) string {
 	fields := [][2]string{
 		{"ac", "wifi"},
@@ -121,6 +108,14 @@ func hongguoDeviceQuery(khronos int64, rticket int64, iid, deviceID string) stri
 }
 
 func (downloader *Downloader) hongguoPlayerPost(ctx context.Context, videoID string) (map[string]any, error) {
+	return downloader.hongguoPlayerPostAt(ctx, videoID, "")
+}
+
+func (downloader *Downloader) hongguoPlayerPostAt(ctx context.Context, videoID, base string) (map[string]any, error) {
+	_, err := downloader.ensureHongguoRegistration(ctx)
+	if err != nil {
+		return nil, err
+	}
 	payload := hongguoMultiPayload{
 		BizParam: hongguoMultiBizParam{
 			DetailPageVersion:      0,
@@ -134,85 +129,44 @@ func (downloader *Downloader) hongguoPlayerPost(ctx context.Context, videoID str
 		},
 		MixedVideoIDMap: map[string][]string{"1004": {videoID}},
 	}
-	body, err := json.Marshal(payload)
-	if err != nil {
-		return nil, err
-	}
-	khronos := time.Now().Unix()
-	iid, deviceID := hongguoPlayerLocalID(), hongguoPlayerLocalID()
-
-	var query string
-	ticketBase := time.Now().UnixMilli()
-	var offset int64
-	for ; offset < 32; offset++ {
-		query = hongguoDeviceQuery(khronos, ticketBase+offset, iid, deviceID)
-		if hgBranchOf(query, body, uint32(khronos)) != 1 {
-			break
+	for attempt := 0; attempt < 2; attempt++ {
+		if attempt > 0 {
+			timer := time.NewTimer(300 * time.Millisecond)
+			select {
+			case <-timer.C:
+			case <-ctx.Done():
+				timer.Stop()
+				return nil, ctx.Err()
+			}
+		}
+		entry, requestErr := downloader.hongguoRegisteredPlayerPostAt(ctx, videoID, base, payload)
+		if !errors.Is(requestErr, errHongguoEmptyPlayback) || attempt == 1 {
+			return entry, requestErr
 		}
 	}
-	if offset == 32 {
-		return nil, errors.New("无法准备红果媒体签名")
-	}
-	fullURL := hongguoMultiBaseURL + hongguoMultiPath + "?" + query
+	return nil, errHongguoEmptyPlayback
+}
 
-	request, err := http.NewRequestWithContext(context.WithValue(ctx, automaticReadOnlyKey{}, true), http.MethodPost, fullURL, bytes.NewReader(body))
-	if err != nil {
-		return nil, err
-	}
-	request.Header.Set("User-Agent", hongguoMultiUserAgent)
-	request.Header.Set("Accept", "application/json; charset=utf-8,application/x-protobuf")
-	request.Header.Set("Content-Type", "application/json; charset=UTF-8")
-	request.Header.Set("x-xs-from-web", "0")
-	request.Header.Set("x-ss-req-ticket", strconv.FormatInt(ticketBase+offset, 10))
-	request.Header.Set("x-tt-request-tag", "t=0;n=0")
-	request.Header.Set("sdk-version", "2")
-	request.Header.Set("passport-sdk-version", "50561")
-	request.Header.Set("x-vc-bdturing-sdk-version", "3.7.2.cn")
-	request.Header.Set("x-ss-stub", hgMd5HexUpper(body))
-	request.Header.Set("x-tt-dt", "")
-	for key, value := range hongguoPureSign(fullURL, body, uint32(khronos)) {
-		request.Header.Set(key, value)
-	}
+var errHongguoEmptyPlayback = errors.New("红果 App 接口未返回有效数据")
 
-	response, err := downloader.doPreparedCatalogRequest(request, 20*time.Second, nil)
-	if err != nil {
-		return nil, err
-	}
-	content, readErr := io.ReadAll(io.LimitReader(response.Body, providerMaxBodyBytes+1))
-	response.Body.Close()
-	if readErr != nil {
-		return nil, readErr
-	}
-	if response.StatusCode != http.StatusOK {
-		return nil, downloader.catalogResponseError(request, response, content)
-	}
-	if len(content) > providerMaxBodyBytes {
-		return nil, errors.New("红果 App 接口响应过大")
-	}
-	if len(content) == 0 {
-		return nil, errors.New("红果 App 接口未返回有效数据")
-	}
+func (downloader *Downloader) hongguoRegisteredPlayerPostAt(ctx context.Context, videoID, base string, payload hongguoMultiPayload) (map[string]any, error) {
+	ctx = context.WithValue(ctx, automaticReadOnlyKey{}, true)
 	var result map[string]any
-	decoder := json.NewDecoder(bytes.NewReader(content))
-	decoder.UseNumber()
-	if err := decoder.Decode(&result); err != nil {
-		return nil, errors.New("红果 App 接口返回格式异常")
+	var err error
+	if base == "" {
+		result, err = downloader.hongguoAppRequest(ctx, http.MethodPost, hongguoMultiPath, nil, payload)
+	} else {
+		result, err = downloader.hongguoAppRequestAt(ctx, base, http.MethodPost, hongguoMultiPath, nil, payload)
 	}
-	if code := firstNonEmpty(mapString(result, "code", "Code", "status_code"), mapString(nestedMap(result, "BaseResp"), "StatusCode")); code != "" && code != "0" {
-		message := firstNonEmpty(mapString(result, "message", "msg"), mapString(nestedMap(result, "BaseResp"), "StatusMessage"))
-		if message != "" {
-			return nil, fmt.Errorf("红果 App 接口暂不可用（%s）：%s", truncate(code, 20), truncate(message, 120))
-		}
-		return nil, fmt.Errorf("红果 App 接口暂不可用（%s）", truncate(code, 20))
+	if err != nil {
+		return nil, err
 	}
-	data := nestedMap(result, "data")
-	entry := nestedMap(data, videoID)
+	entry := nestedMap(nestedMap(result, "data"), videoID)
 	if len(entry) == 0 {
 		return nil, errors.New("红果 App 接口未返回所选分集")
 	}
 	return entry, nil
 }
-
 func (downloader *Downloader) hongguoPlayerFollowFallback(ctx context.Context, fallback string) (map[string]any, error) {
 	fallback = hongguoCleanMediaURL(fallback)
 	if !hongguoCheckedURL(fallback, hongguoAPIDomains) {
@@ -528,16 +482,25 @@ func selectHongguoFallbackMedia(info map[string]any) (providerMedia, error) {
 }
 
 func (downloader *Downloader) resolveHongguoAppMedia(ctx context.Context, videoID string) (providerMedia, error) {
+	return downloader.resolveHongguoAppMediaAt(ctx, videoID, "")
+}
+
+func (downloader *Downloader) resolveHongguoAppMediaAt(ctx context.Context, videoID, base string) (providerMedia, error) {
 	if !hongguoNumericID.MatchString(videoID) {
 		return providerMedia{}, errors.New("红果视频 ID 无效")
 	}
-	entry, err := downloader.hongguoPlayerPost(ctx, videoID)
+	entry, err := downloader.hongguoPlayerPostAt(ctx, videoID, base)
 	if err != nil {
 		return providerMedia{}, err
 	}
 	model, err := hongguoVideoModel(entry)
 	if err != nil {
 		return providerMedia{}, err
+	}
+	if base != "" {
+		if media, err := selectHongguoAppMedia(model); err == nil {
+			return media, nil
+		}
 	}
 	fallback := hongguoParseFallback(model["fallback_api"])
 	if fallback == "" {

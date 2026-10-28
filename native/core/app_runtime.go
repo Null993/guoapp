@@ -94,6 +94,9 @@ type Downloader struct {
 	limiter               *requestLimiter
 	proxyRouter           *proxyRouter
 	hongguoOnce           sync.Once
+	hongguoBackupMu       sync.Mutex
+	hongguoBackupRetryAt  time.Time
+	hongguoBackupError    error
 	hongguo               *hongguoAppClient
 	huangjuOnce           sync.Once
 	huangju               *huangjuAPIClient
@@ -144,6 +147,7 @@ type nativeDrama struct {
 }
 
 type nativeInput struct {
+	Update           nativeUpdateInput       `json:"update"`
 	LAN              json.RawMessage         `json:"lan"`
 	ExpectedVersions map[string]string       `json:"expectedVersions"`
 	SystemProxy      nativeSystemProxy       `json:"systemProxy"`
@@ -205,6 +209,8 @@ type nativePlan struct {
 }
 
 type nativeEngine struct {
+	updateMu          sync.Mutex
+	update            nativeUpdateState
 	lanMu             sync.Mutex
 	lan               *nativeLANServer
 	settingsMu        sync.Mutex
@@ -484,7 +490,7 @@ func nativeDispatch(input nativeInput) (any, error) {
 		return nil, errors.New("应用核心尚未就绪，请重新打开应用")
 	}
 	duration := 60 * time.Second
-	if input.Action == "moveDownloads" {
+	if input.Action == "moveDownloads" || input.Action == "appUpdate" && (input.Command == "install" || input.Command == "rollback") {
 		duration = 10 * time.Minute
 	} else if input.Action == "importSourceResults" || input.Action == "exportSourceResults" {
 		duration = 10 * time.Minute
@@ -504,6 +510,8 @@ func nativeDispatch(input nativeInput) (any, error) {
 		ctx = work
 	}
 	switch input.Action {
+	case "appUpdate":
+		return engine.nativeAppUpdate(ctx, input.Command, input.Update)
 	case "lan":
 		return engine.nativeLAN(ctx, input.Command, input.LAN)
 	case "updateSystemProxy":
@@ -831,7 +839,7 @@ func (engine *nativeEngine) nativeCatalog(ctx context.Context, input nativeInput
 			address += "&category=" + url.QueryEscape(category)
 		}
 		var body string
-		body, err = d.fetchProviderText(ctx, address, d.providerBaseURL(source)+"/")
+		body, address, err = d.fetchProviderTextPage(ctx, address, d.providerBaseURL(source)+"/")
 		if err == nil {
 			items = parseHuangguoVideoCards(body, address)
 		}

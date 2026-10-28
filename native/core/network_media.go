@@ -35,7 +35,7 @@ func mediaRequestHeaders(request *http.Request, referer string) {
 
 func (d *Downloader) isHuangguoVideoURL(address *url.URL) bool {
 	configured, err := url.Parse(d.providerBaseURL(sourceHuangguoVideo))
-	return address != nil && (strings.EqualFold(address.Hostname(), "huangguo.video") || err == nil && strings.EqualFold(address.Host, configured.Host))
+	return address != nil && (huangguoVideoRouteHost(address.Hostname()) || err == nil && strings.EqualFold(address.Host, configured.Host))
 }
 
 func (d *Downloader) previewSession(origin string) *huangguoPreviewSession {

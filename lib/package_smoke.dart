@@ -2,12 +2,15 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
+import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:media_kit/media_kit.dart';
 import 'package:media_kit_video/media_kit_video.dart';
 
 import 'core_bridge.dart';
+import 'catalog_filters.dart';
 import 'media_pipeline.dart';
+import 'models.dart';
 import 'playback_video_configuration.dart';
 import 'video_enhancement_mpv.dart';
 
@@ -22,6 +25,11 @@ Future<void> runPackageSmoke(List<String> arguments) async {
     final repository = NativeRepository();
     await repository.initialize();
     evidence['nativeCore'] = true;
+    evidence['updateBridge'] =
+        (await repository.appUpdate('status'))['repository'] ==
+        'Null993/guoapp';
+    if (evidence['updateBridge'] != true) throw StateError('更新核心未就绪');
+    evidence.addAll(await _smokeCategoryScrolling());
     final executor = FFmpegExecutor();
     final probe = await executor.probe(input);
     verifyMediaDuration(probe, 3);
@@ -122,5 +130,133 @@ Future<void> runPackageSmoke(List<String> arguments) async {
     for (final subscription in subscriptions) {
       await subscription.cancel();
     }
+  }
+}
+
+Future<Map<String, dynamic>> _smokeCategoryScrolling() async {
+  final key = GlobalKey();
+  final vertical = ScrollController();
+  var selections = 0;
+  try {
+    runApp(
+      MaterialApp(
+        home: Scaffold(
+          body: SingleChildScrollView(
+            controller: vertical,
+            child: Column(
+              children: [
+                CatalogFilters(
+                  key: key,
+                  categories: List.generate(
+                    64,
+                    (index) => CatalogCategory('$index', 'Category $index'),
+                  ),
+                  category: '0',
+                  onCategory: (_) => selections++,
+                  onRetry: () {},
+                ),
+                const SizedBox(height: 1800),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+    await WidgetsBinding.instance.endOfFrame;
+    ScrollableState? scrollable;
+    void visit(Element element) {
+      if (element is StatefulElement && element.state is ScrollableState) {
+        scrollable = element.state as ScrollableState;
+      }
+      element.visitChildElements(visit);
+    }
+
+    key.currentContext!.visitChildElements(visit);
+    final position = scrollable!.position;
+    final box = key.currentContext!.findRenderObject()! as RenderBox;
+    final start = box.localToGlobal(
+      Offset(box.size.width * .6, box.size.height / 2),
+    );
+    const device = 9901;
+    void send(PointerEvent event) =>
+        GestureBinding.instance.handlePointerEvent(event);
+    send(
+      PointerAddedEvent(
+        device: device,
+        kind: PointerDeviceKind.mouse,
+        position: start,
+      ),
+    );
+    send(
+      PointerDownEvent(
+        device: device,
+        pointer: device,
+        kind: PointerDeviceKind.mouse,
+        position: start,
+        buttons: kPrimaryMouseButton,
+      ),
+    );
+    await Future<void>.delayed(const Duration(milliseconds: 30));
+    send(
+      PointerMoveEvent(
+        device: device,
+        pointer: device,
+        kind: PointerDeviceKind.mouse,
+        position: start - const Offset(30, 0),
+        delta: const Offset(-30, 0),
+        buttons: kPrimaryMouseButton,
+      ),
+    );
+    await Future<void>.delayed(const Duration(milliseconds: 30));
+    final end = start - const Offset(230, 0);
+    send(
+      PointerMoveEvent(
+        device: device,
+        pointer: device,
+        kind: PointerDeviceKind.mouse,
+        position: end,
+        delta: const Offset(-200, 0),
+        buttons: kPrimaryMouseButton,
+      ),
+    );
+    send(
+      PointerUpEvent(
+        device: device,
+        pointer: device,
+        kind: PointerDeviceKind.mouse,
+        position: end,
+      ),
+    );
+    send(
+      PointerRemovedEvent(
+        device: device,
+        kind: PointerDeviceKind.mouse,
+        position: end,
+      ),
+    );
+    final dragWorked = position.pixels > 100 && selections == 0;
+    position.jumpTo(0);
+    send(
+      PointerScrollEvent(position: start, scrollDelta: const Offset(0, 120)),
+    );
+    final wheelWorked = (position.pixels - 120).abs() < 1;
+    send(PointerScrollEvent(position: start, scrollDelta: const Offset(80, 0)));
+    final horizontalWorked = (position.pixels - 200).abs() < 1;
+    final pageStayedStill = vertical.offset == 0;
+    if (!dragWorked || !wheelWorked || !horizontalWorked || !pageStayedStill) {
+      throw StateError(
+        'Category scrolling smoke failed: drag=$dragWorked wheel=$wheelWorked horizontal=$horizontalWorked page=$pageStayedStill',
+      );
+    }
+    return {
+      'categoryMouseDrag': dragWorked,
+      'categoryMouseWheel': wheelWorked,
+      'categoryHorizontalWheel': horizontalWorked,
+      'categoryPageStayedStill': pageStayedStill,
+    };
+  } finally {
+    runApp(const SizedBox.shrink());
+    await WidgetsBinding.instance.endOfFrame;
+    vertical.dispose();
   }
 }
