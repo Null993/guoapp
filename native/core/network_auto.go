@@ -126,6 +126,14 @@ func automaticNetworkFailure(err error) bool {
 	if err == nil || errors.Is(err, context.Canceled) {
 		return false
 	}
+	var emptyRoute *proxyInterceptionError
+	if errors.As(err, &emptyRoute) {
+		return true
+	}
+	var route *sourceTransientError
+	if errors.As(err, &route) && (route.status == http.StatusBadGateway || route.status == http.StatusGatewayTimeout) {
+		return true
+	}
 	if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) || errors.Is(err, net.ErrClosed) || isCertificateSourceError(err) {
 		return true
 	}
@@ -329,7 +337,7 @@ func (transport *autoNetworkTransport) RoundTrip(request *http.Request) (*http.R
 			delete(active, result.index)
 			response, err := result.response, result.err
 			gateway := err == nil && (response.StatusCode == 407 || response.StatusCode == 502 || response.StatusCode == 504)
-			if err == nil && routes[result.index].proxy != nil && response.StatusCode == 404 && response.ContentLength == 0 && proxyInterceptionSuspected(request.URL.Hostname(), response.StatusCode, response.Header, nil, result.elapsed) {
+			if err == nil && (emptyRouteNotFound(response) || yeguoRouteBadRequest(request, response)) {
 				gateway = true
 			}
 			if err == nil && !gateway {
@@ -341,7 +349,7 @@ func (transport *autoNetworkTransport) RoundTrip(request *http.Request) (*http.R
 			lastWasGateway = gateway
 			if gateway {
 				if response.StatusCode == 404 {
-					err = fmt.Errorf("代理返回空 HTTP 404（疑似拦截）: %w", &proxyInterceptionError{host: request.URL.Hostname(), status: 404, elapsed: result.elapsed})
+					err = fmt.Errorf("网络路径返回空 HTTP 404: %w", &proxyInterceptionError{host: request.URL.Hostname(), status: 404, elapsed: result.elapsed})
 				} else {
 					err = fmt.Errorf("网络网关 HTTP %d", response.StatusCode)
 				}

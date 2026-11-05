@@ -21,10 +21,10 @@ class UpdateFixture extends FixtureRepository {
     }
     return {
       'status': 'available',
-      'version': '0.2.83+90',
+      'version': '0.2.86+93',
       'notes': '修复说明',
       'message': '发现新版本，可下载并安装',
-      'asset': {'name': 'zhenguojian-0.2.83+90-windows-x64.zip', 'size': 1024},
+      'asset': {'name': 'zhenguojian-0.2.86+93-windows-x64.zip', 'size': 1024},
     };
   }
 }
@@ -45,7 +45,7 @@ void main() {
       await tester.pumpAndSettle();
       await tester.tap(find.widgetWithText(OutlinedButton, '检查更新'));
       await tester.pumpAndSettle();
-      expect(find.text('已发布版本：0.2.83+90'), findsOneWidget);
+      expect(find.text('已发布版本：0.2.86+93'), findsOneWidget);
       expect(find.text('修复说明'), findsOneWidget);
       await tester.tap(find.text('下载新版本'));
       await tester.pumpAndSettle();

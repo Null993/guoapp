@@ -6,6 +6,7 @@ import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:media_kit/media_kit.dart';
 import 'package:media_kit_video/media_kit_video.dart';
+import 'package:window_manager/window_manager.dart';
 
 import 'core_bridge.dart';
 import 'catalog_filters.dart';
@@ -13,6 +14,7 @@ import 'media_pipeline.dart';
 import 'models.dart';
 import 'playback_video_configuration.dart';
 import 'video_enhancement_mpv.dart';
+import 'source_login_smoke.dart';
 
 Future<void> runPackageSmoke(List<String> arguments) async {
   if (arguments.length != 3) exit(2);
@@ -30,6 +32,7 @@ Future<void> runPackageSmoke(List<String> arguments) async {
         'Null993/guoapp';
     if (evidence['updateBridge'] != true) throw StateError('更新核心未就绪');
     evidence.addAll(await _smokeCategoryScrolling());
+    evidence.addAll(await smokeSourceLoginWebView());
     final executor = FFmpegExecutor();
     final probe = await executor.probe(input);
     verifyMediaDuration(probe, 3);
@@ -113,7 +116,6 @@ Future<void> runPackageSmoke(List<String> arguments) async {
       flush: true,
     );
     await player.dispose();
-    exit(0);
   } catch (error) {
     evidence['error'] = error.toString();
     evidence['playerErrors'] = errors;
@@ -125,11 +127,13 @@ Future<void> runPackageSmoke(List<String> arguments) async {
     }
     await player?.dispose();
     await report.writeAsString(jsonEncode(evidence), flush: true);
-    exit(1);
   } finally {
     for (final subscription in subscriptions) {
       await subscription.cancel();
     }
+    runApp(const SizedBox.shrink());
+    await WidgetsBinding.instance.endOfFrame;
+    await windowManager.destroy();
   }
 }
 

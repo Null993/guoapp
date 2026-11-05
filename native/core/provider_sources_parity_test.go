@@ -168,7 +168,7 @@ func TestProviderCatalogUpdateKeepsSinglePageContinuation(t *testing.T) {
 	if err := engine.updateSource(context.Background(), sourceHuangju, "more"); err != nil {
 		t.Fatal(err)
 	}
-	if !reflect.DeepEqual(pages, []string{"8"}) {
+	if !reflect.DeepEqual(pages, []string{"3", "8"}) {
 		t.Fatalf("ordinary more should keep one-page continuation: %v", pages)
 	}
 }
@@ -202,10 +202,11 @@ func TestProviderCatalogRankingsUseProviderCatalogPages(t *testing.T) {
 			if request.URL.Path == "/auth/guest" {
 				return sourceFixtureResponse(request, http.StatusOK, `{"token":"guest-token"}`), nil
 			}
-			if request.URL.Path != "/dramas" || request.URL.Query().Get("page") != "2" || request.URL.Query().Get("sort") != "hot" {
+			page := request.URL.Query().Get("page")
+			if request.URL.Path != "/dramas" || (page != "1" && page != "2") || request.URL.Query().Get("sort") != "hot" {
 				t.Fatalf("unexpected huangju ranking request: %s", request.URL.String())
 			}
-			return sourceFixtureResponse(request, http.StatusOK, `{"items":[{"id":"201","slug":"rank-a","title":"剧果榜一"},{"id":"202","slug":"rank-b","title":"剧果榜二"}],"page":2,"pageSize":20,"total":22}`), nil
+			return sourceFixtureResponse(request, http.StatusOK, fmt.Sprintf(`{"items":[{"id":"201","slug":"rank-a","title":"剧果榜一"},{"id":"202","slug":"rank-b","title":"剧果榜二"}],"page":%s,"pageSize":20,"total":22}`, page)), nil
 		})
 		board, _ := findRankingBoard("huangju-hot")
 		page, err := d.fetchCatalogRankingPage(context.Background(), board, 2)

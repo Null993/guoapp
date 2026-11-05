@@ -65,3 +65,35 @@ func (d *Downloader) huangdouDetail(ctx context.Context, id string) (map[string]
 	d.providerMu.Unlock()
 	return row, err
 }
+
+func (d *Downloader) huangdouMetadataRemoved(ctx context.Context, drama nativeDrama) (bool, error) {
+	title := strings.TrimSpace(drama.Title)
+	if title == "" || len([]rune(title)) > 512 {
+		return false, nil
+	}
+	var decoded any
+	if err := newHuangdouAPIClient(d).call(ctx, "/drama/list", map[string]any{"page": "1", "page_size": "90", "keywords": title}, &decoded); err != nil {
+		return false, err
+	}
+	rows, valid := huangdouDataMap(decoded)["list"].([]any)
+	if !valid {
+		return false, errors.New("黄豆目录查询数据格式异常")
+	}
+	if len(rows) >= 90 {
+		return false, nil
+	}
+	_, id, valid := splitProviderDramaID(drama.ID)
+	if !valid {
+		return false, nil
+	}
+	for _, value := range rows {
+		row, valid := value.(map[string]any)
+		if !valid {
+			return false, errors.New("黄豆目录查询包含无效条目")
+		}
+		if strings.TrimPrefix(mapString(row, "id"), "rp_") == id || strings.TrimPrefix(mapString(row, "drama_id"), "rp_") == id {
+			return false, nil
+		}
+	}
+	return true, nil
+}

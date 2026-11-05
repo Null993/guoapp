@@ -87,7 +87,7 @@ func TestSourceProbeReportsProxyInterception(t *testing.T) {
 		t.Fatal("瞬时空 404 应返回错误")
 	} else {
 		message := publicError(err).Error()
-		for _, hint := range []string{"疑似本机代理拦截", "空 404", "无 Server 头", "ms", "改用直连"} {
+		for _, hint := range []string{"网络路径响应异常", "空 404", "无 Server 头", "ms", "DNS"} {
 			if !strings.Contains(message, hint) {
 				t.Fatalf("错误文案缺少 %q：%q", hint, message)
 			}
@@ -134,7 +134,7 @@ func TestSourceHealthStepMarksProxyInterception(t *testing.T) {
 	if !media.ProxyIntercepted || media.HTTPStatus != http.StatusNotFound {
 		t.Fatalf("媒体连接步骤未标记代理拦截：%+v", media)
 	}
-	if !strings.Contains(media.Message, "疑似本机代理拦截") {
+	if !strings.Contains(media.Message, "网络路径响应异常") {
 		t.Fatalf("媒体连接步骤详情不完整：%+v", media)
 	}
 }
@@ -176,7 +176,7 @@ func TestProxyInterceptionIsNotCatalogTail(t *testing.T) {
 	engine.runSourceTask(context.Background(), sourceHuangguoVideo, "update", nativeDrama{}, &nativeSourceTask{cancel: func() {}})
 
 	status := engine.sourceStatus(sourceHuangguoVideo)
-	if status.Stage != "未完成" || !strings.Contains(status.Error, "疑似本机代理拦截") {
+	if status.Stage != "未完成" || !strings.Contains(status.Error, "网络路径响应异常") {
 		t.Fatalf("页尾被代理拦截时应报错：stage=%q error=%q", status.Stage, status.Error)
 	}
 	if !engine.nativeCached(sourceHuangguoVideo).HasMore {
@@ -211,7 +211,7 @@ func TestSourceMetadataKeepsInterceptionPending(t *testing.T) {
 	engine.runSourceTask(context.Background(), sourceHuangguoVideo, "update", nativeDrama{}, &nativeSourceTask{cancel: func() {}})
 
 	status := engine.sourceStatus(sourceHuangguoVideo)
-	if status.Stage != "未完成" || !strings.Contains(status.Error, "疑似本机代理拦截") {
+	if status.Stage != "未完成" || !strings.Contains(status.Error, "网络路径响应异常") {
 		t.Fatalf("资料阶段遇到代理拦截应中断并给出可操作文案：stage=%q error=%q", status.Stage, status.Error)
 	}
 	items := engine.nativeCached(sourceHuangguoVideo).Items
@@ -294,7 +294,7 @@ func TestHuangguoProviderTextReportsPrimaryCandidateFailure(t *testing.T) {
 		t.Fatal("所有候选都失败时应返回错误")
 	}
 	message := err.Error()
-	for _, hint := range []string{"主候选", "疑似本机代理拦截", "最后错误", "certificate signed by unknown authority"} {
+	for _, hint := range []string{"主候选", "网络路径响应异常", "最后错误", "certificate signed by unknown authority"} {
 		if !strings.Contains(message, hint) {
 			t.Fatalf("文案缺少 %q：%q", hint, message)
 		}
@@ -342,7 +342,7 @@ func TestHuangguoProviderTextKeepsInterceptionTypeChain(t *testing.T) {
 	if !errors.As(err, &intercepted) {
 		t.Fatalf("末候选的拦截错误类型链断了：%v", err)
 	}
-	if !strings.Contains(err.Error(), "疑似本机代理拦截") || !strings.Contains(err.Error(), "主候选") {
+	if !strings.Contains(err.Error(), "网络路径响应异常") || !strings.Contains(err.Error(), "主候选") {
 		t.Fatalf("多候选拦截文案不完整：%q", err)
 	}
 }
@@ -358,7 +358,7 @@ func TestHuangguoProviderTextSingleCandidateKeepsRawError(t *testing.T) {
 	if strings.Contains(err.Error(), "已尝试") {
 		t.Fatalf("单一候选不应加多域名包装：%q", err)
 	}
-	if !strings.Contains(err.Error(), "疑似本机代理拦截") {
+	if !strings.Contains(err.Error(), "网络路径响应异常") {
 		t.Fatalf("单一候选应保留拦截文案：%q", err)
 	}
 }

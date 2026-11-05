@@ -22,7 +22,7 @@ func updateFixtureRelease(tag, slug, platform string) appRelease {
 }
 
 func TestAppUpdateVersionAndPlatformSelection(t *testing.T) {
-	latest := updateFixtureRelease("app-v0.2.83-90", "zhenguojian", "windows-x64.zip")
+	latest := updateFixtureRelease("app-v0.2.86-93", "zhenguojian", "windows-x64.zip")
 	cases := []struct {
 		name     string
 		releases []appRelease
@@ -35,7 +35,7 @@ func TestAppUpdateVersionAndPlatformSelection(t *testing.T) {
 		{"different edition", []appRelease{latest}, "windows", nil, false, "no_asset"},
 		{"wrong platform", []appRelease{latest}, "android", []string{"arm64-v8a"}, true, "no_asset"},
 		{"local newer", []appRelease{updateFixtureRelease("app-v0.2.68-75", "zhenguojian", "arm64-v8a.apk")}, "windows", nil, true, "local_newer"},
-		{"equal", []appRelease{updateFixtureRelease("v0.2.82+89", "zhenguojian", "windows-x64.zip")}, "windows", nil, true, "current"},
+		{"equal", []appRelease{updateFixtureRelease("v0.2.85+92", "zhenguojian", "windows-x64.zip")}, "windows", nil, true, "current"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -45,8 +45,8 @@ func TestAppUpdateVersionAndPlatformSelection(t *testing.T) {
 			}
 		})
 	}
-	android := updateFixtureRelease("0.2.83+90", "zhenguojian", "armeabi-v7a.apk")
-	arm64 := updateFixtureRelease("0.2.83+90", "zhenguojian", "arm64-v8a.apk")
+	android := updateFixtureRelease("0.2.86+93", "zhenguojian", "armeabi-v7a.apk")
+	arm64 := updateFixtureRelease("0.2.86+93", "zhenguojian", "arm64-v8a.apk")
 	android.Assets = append(android.Assets, arm64.Assets...)
 	result, err := selectAppRelease([]appRelease{android}, "android", []string{"arm64-v8a", "armeabi-v7a"}, true)
 	if err != nil || result.Asset == nil || !strings.HasSuffix(result.Asset.Name, "arm64-v8a.apk") {
@@ -122,9 +122,9 @@ func TestAppUpdateDownloadVerifiesChecksumAndDoesNotExposePartial(t *testing.T) 
 }
 
 func TestAppUpdateCacheAndRateLimit(t *testing.T) {
-	release := updateFixtureRelease("app-v0.2.83-90", "zhenguojian", "windows-x64.zip")
+	release := updateFixtureRelease("app-v0.2.86-93", "zhenguojian", "windows-x64.zip")
 	if runtime.GOOS == "android" {
-		release = updateFixtureRelease("app-v0.2.83-90", "zhenguojian", "x86_64.apk")
+		release = updateFixtureRelease("app-v0.2.86-93", "zhenguojian", "x86_64.apk")
 	}
 	body, _ := json.Marshal([]appRelease{release})
 	calls := 0
@@ -148,7 +148,7 @@ func TestAppUpdateCacheAndRateLimit(t *testing.T) {
 	input := nativeUpdateInput{Platform: runtime.GOOS, ABIs: []string{"x86_64"}}
 	for range 2 {
 		result, err := e.checkAppUpdate(context.Background(), input)
-		if err != nil || result.Version != "0.2.83+90" {
+		if err != nil || result.Version != "0.2.86+93" {
 			t.Fatal(result, err)
 		}
 	}

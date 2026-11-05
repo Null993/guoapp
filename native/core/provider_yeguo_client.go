@@ -672,7 +672,7 @@ func (client *yeguoAPIClient) call(ctx context.Context, route string, parameters
 		body, readErr := io.ReadAll(io.LimitReader(response.Body, (8<<20)+1))
 		response.Body.Close()
 		if response.StatusCode < 200 || response.StatusCode >= 300 || catalogResponseBlockReason(response, body) != "" {
-			return nil, client.downloader.catalogResponseError(request, response, body)
+			return nil, fmt.Errorf("野果接口 %s 请求失败: %w", route, client.downloader.catalogResponseError(request, response, body))
 		}
 		if readErr != nil || len(body) > 8<<20 {
 			return nil, errors.New("野果接口数据过大或读取失败")

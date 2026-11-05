@@ -491,6 +491,17 @@ func (downloader *Downloader) resolveHongguoAppMediaAt(ctx context.Context, vide
 	}
 	entry, err := downloader.hongguoPlayerPostAt(ctx, videoID, base)
 	if err != nil {
+		if errors.Is(err, errHongguoEmptyPlayback) && ctx.Err() == nil {
+			entry, err = downloader.hongguoCurrentPlayerPostAt(ctx, videoID, base)
+			if err != nil {
+				return providerMedia{}, err
+			}
+			model, err := hongguoVideoModel(entry)
+			if err != nil {
+				return providerMedia{}, err
+			}
+			return selectHongguoAppMedia(model)
+		}
 		return providerMedia{}, err
 	}
 	model, err := hongguoVideoModel(entry)

@@ -10,6 +10,7 @@ import 'core_bridge.dart';
 import 'local_store.dart';
 import 'models.dart';
 import 'source_status.dart';
+import 'source_login_screen.dart';
 
 String sourceResultStamp(DateTime value) {
   String two(int number) => number.toString().padLeft(2, '0');
@@ -542,12 +543,13 @@ class _SourcesScreenState extends State<SourcesScreen> {
     final userAgent = TextEditingController();
     final token = TextEditingController();
     final deviceId = TextEditingController();
+    Future<bool?>? dialogRemoved;
     try {
       final info = await widget.repository.sourceAccess(source.id);
       if (!mounted) return;
       final url = info['url'] as String? ?? '';
       origin.text = info['origin'] as String? ?? url;
-      final saved = await showDialog<bool>(
+      final route = DialogRoute<bool>(
         context: context,
         builder: (context) => AlertDialog(
           title: Text('${source.name}验证与授权'),
@@ -577,46 +579,72 @@ class _SourcesScreenState extends State<SourcesScreen> {
                       labelText: '浏览器 User-Agent（可选）',
                     ),
                   ),
-                  if (source.id == 'huangdou') ...[
+                  if (source.id == 'huangdou' || source.id == 'sorani') ...[
                     TextField(
                       controller: token,
-                      decoration: const InputDecoration(
-                        labelText: '本人站点授权令牌（可选）',
+                      obscureText: source.id == 'sorani',
+                      decoration: InputDecoration(
+                        labelText: source.id == 'sorani'
+                            ? '本人登录令牌（accessToken / Bearer）'
+                            : '本人站点授权令牌（可选）',
                       ),
                     ),
                     TextField(
                       controller: deviceId,
-                      decoration: const InputDecoration(
-                        labelText: '该令牌对应设备标识（可选）',
+                      decoration: InputDecoration(
+                        labelText: source.id == 'sorani'
+                            ? '本人访客标识（可选）'
+                            : '该令牌对应设备标识（可选）',
                       ),
                     ),
                   ],
-                  if (Platform.isAndroid)
+                  if (Platform.isAndroid || Platform.isWindows)
                     TextButton.icon(
+                      key: ValueKey('login-${source.id}'),
                       onPressed: () async {
                         try {
-                          final result = await _verifySource(origin.text);
+                          final site = Uri.parse(
+                            source.id == 'sorani' ? url : origin.text,
+                          );
+                          final target = Uri.parse(origin.text);
+                          if (site.scheme != 'https' ||
+                              target.scheme != 'https' ||
+                              site.host.isEmpty ||
+                              target.host.isEmpty ||
+                              site.userInfo.isNotEmpty ||
+                              target.userInfo.isNotEmpty) {
+                            throw StateError('登录地址必须是本站 HTTPS 地址');
+                          }
+                          final result = await Navigator.of(context)
+                              .push<Map<String, String>>(
+                                MaterialPageRoute(
+                                  builder: (_) => SourceLoginScreen(
+                                    source: source.id,
+                                    name: source.name,
+                                    url: site,
+                                    origin: target,
+                                  ),
+                                ),
+                              );
                           if (result == null || !context.mounted) return;
                           origin.text = result['origin'] ?? origin.text;
                           cookie.text = result['cookie'] ?? '';
                           userAgent.text = result['userAgent'] ?? '';
-                        } catch (error) {
-                          if (context.mounted) _showMessage(error.toString());
+                          token.text = result['accessToken'] ?? '';
+                          deviceId.text = result['deviceId'] ?? '';
+                        } catch (_) {
+                          if (context.mounted) {
+                            _showMessage('无法打开站点登录页，请检查地址及系统 WebView 组件');
+                          }
                         }
                       },
-                      icon: const Icon(Icons.open_in_browser),
-                      label: const Text('打开人工验证页'),
-                    ),
-                  if (Platform.isWindows)
-                    TextButton.icon(
-                      onPressed: () => _openInBrowser(origin.text),
-                      icon: const Icon(Icons.open_in_browser),
-                      label: const Text('在浏览器打开，验证后粘贴同域 Cookie 与 UA'),
+                      icon: const Icon(Icons.login),
+                      label: const Text('在程序内登录 / 验证并提取会话'),
                     ),
                   const Padding(
                     padding: EdgeInsets.only(top: 8),
                     child: Text(
-                      'Android 可在应用内完成站点验证并自动读取同域 Cookie；Windows 与 iOS 请在浏览器完成验证后，手工粘贴同域 Cookie 与 User-Agent。',
+                      '登录成功后自动读取本站会话，点击“保存并继续”应用。青空可自动识别登录令牌；会话过期后重新登录。',
                     ),
                   ),
                 ],
@@ -640,6 +668,9 @@ class _SourcesScreenState extends State<SourcesScreen> {
           ],
         ),
       );
+      final pending = Navigator.of(context, rootNavigator: true).push(route);
+      dialogRemoved = route.completed;
+      final saved = await pending;
       if (saved == true) {
         await _saveSourceAccess(
           source,
@@ -653,28 +684,12 @@ class _SourcesScreenState extends State<SourcesScreen> {
     } catch (error) {
       if (mounted) _showMessage(error.toString());
     } finally {
+      await dialogRemoved;
       origin.dispose();
       cookie.dispose();
       userAgent.dispose();
       token.dispose();
       deviceId.dispose();
-    }
-  }
-
-  Future<Map<String, String>?> _verifySource(String url) => const MethodChannel(
-    'duanju/device',
-  ).invokeMapMethod<String, String>('verifySource', {'url': url.trim()});
-
-  Future<void> _openInBrowser(String url) async {
-    final address = url.trim();
-    if (address.isEmpty) {
-      _showMessage('请先填写验证站点 HTTPS 地址');
-      return;
-    }
-    try {
-      await Process.start('explorer.exe', [address]);
-    } catch (error) {
-      if (mounted) _showMessage(error.toString());
     }
   }
 
@@ -899,11 +914,6 @@ class _SourcesScreenState extends State<SourcesScreen> {
                       PopupMenuItem(value: 'remove', child: Text('移除站源')),
                     ],
                   ),
-                  IconButton(
-                    tooltip: '查看地址与人工验证',
-                    onPressed: () => _sourceAccess(source),
-                    icon: const Icon(Icons.verified_user_outlined),
-                  ),
                 ],
               ],
             ),
@@ -942,6 +952,13 @@ class _SourcesScreenState extends State<SourcesScreen> {
                   icon: const Icon(Icons.network_check),
                   label: const Text('检测连接与播放'),
                 ),
+                if (widget.store.profile.admin)
+                  TextButton.icon(
+                    key: ValueKey('access-${source.id}'),
+                    onPressed: () => _sourceAccess(source),
+                    icon: const Icon(Icons.login),
+                    label: const Text('登录与授权'),
+                  ),
                 if (status?.running == true)
                   TextButton(
                     onPressed: pending ? null : () => _run(source, 'cancel'),

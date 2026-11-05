@@ -425,6 +425,29 @@ func huangdouList(v any) []map[string]any {
 	return nil
 }
 
+func (d *Downloader) fetchHuangdouCatalogPage(ctx context.Context, page int) ([]Drama, bool, error) {
+	if page < 1 || page > nativeSourceCatalogPageLimit {
+		return nil, false, errors.New("黄豆目录页码无效")
+	}
+	var decoded any
+	physical := (page-1)/3 + 1
+	offset := (page - 1) % 3 * 30
+	client := newHuangdouAPIClient(d)
+	if err := client.call(ctx, "/drama/list", map[string]any{"page": strconv.Itoa(physical), "page_size": "90"}, &decoded); err != nil {
+		return nil, false, err
+	}
+	rows := huangdouList(decoded)
+	more := offset+30 < len(rows) || len(rows) >= 90
+	rows = rows[min(offset, len(rows)):min(offset+30, len(rows))]
+	items := make([]Drama, 0, len(rows))
+	for _, row := range rows {
+		if drama := huangdouDramaFromMap(row); drama.ID != "" {
+			items = append(items, drama)
+		}
+	}
+	return items, more, nil
+}
+
 func atoiDefault(s string, fallback int) int {
 	if n, err := strconv.Atoi(strings.TrimSpace(s)); err == nil {
 		return n

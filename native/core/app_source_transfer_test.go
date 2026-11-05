@@ -211,6 +211,31 @@ func TestSourceResultsImportRejectsInvalidFiles(t *testing.T) {
 	}
 }
 
+func TestSourceResultsRecommendationsRoundTrip(t *testing.T) {
+	engine := sourceResultsTestEngine(t)
+	key := nativeRecommendationKey("ai_series")
+	engine.mu.Lock()
+	engine.catalogs[key] = []nativeDrama{{ID: "hongguo:7", Source: sourceHongguo, Title: "合成推荐"}}
+	engine.catalogStates[key] = nativeCatalogState{Page: 2, HasMore: true}
+	engine.mu.Unlock()
+	path := filepath.Join(t.TempDir(), "recommendations.json")
+	if _, err := engine.exportSourceResults(path); err != nil {
+		t.Fatal(err)
+	}
+	target := sourceResultsTestEngine(t)
+	if _, err := target.importSourceResults(path); err != nil {
+		t.Fatal(err)
+	}
+	page := target.nativeCached(key)
+	if len(page.Items) != 1 || page.Items[0].ID != "hongguo:7" || page.Page != 2 {
+		t.Fatal(page)
+	}
+	invalid := sourceResultsTestFile(t, "invalid-recommendation.json", `{"version":"sourceResults.v1","sources":[{"source":"hongguo","category":"recommendation:invalid","items":[]}]}`)
+	if _, err := target.importSourceResults(invalid); err == nil {
+		t.Fatal("unknown recommendation category was accepted")
+	}
+}
+
 func TestSourceResultsDispatchRoundTrip(t *testing.T) {
 	response := NativeRequest(fmt.Sprintf(`{"action":"initialize","directory":%q}`, t.TempDir()))
 	var init map[string]any

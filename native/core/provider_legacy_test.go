@@ -217,3 +217,37 @@ func TestLegacyPublicProtocolValidation(t *testing.T) {
 		}
 	}
 }
+
+func TestLegacyRateLimitedLoginKeepsDeviceAcrossRestart(t *testing.T) {
+	var devices []string
+	transport := sourceFixtureTransport(func(request *http.Request) (*http.Response, error) {
+		if request.URL.Path != "/api/app/mine/login/h5" {
+			t.Fatal(request.URL.Path)
+		}
+		devices = append(devices, request.Header.Get("X-User-Agent"))
+		return sourceFixtureResponse(request, 200, `{"code":4007,"msg":"login too frequently"}`), nil
+	})
+	d := legacyFixtureDownloader(t, transport)
+	d.cfg.InterfaceKey, d.cfg.ParamKey, d.cfg.ParamIV = fixtureLegacyProtocol.InterfaceKey, fixtureLegacyProtocol.ParamKey, fixtureLegacyProtocol.ParamIV
+	for attempt := 0; attempt < 2; attempt++ {
+		_, err := d.legacyCredentials(context.Background())
+		var failure *legacyAPIError
+		if !errors.As(err, &failure) || failure.code != "4007" {
+			t.Fatal(err)
+		}
+		if _, err := d.legacyCredentials(context.Background()); err == nil {
+			t.Fatal("rate-limited login lost its cached failure")
+		}
+		state := d.loadLegacySession()
+		if state.DeviceID == "" || state.Token != "" {
+			t.Fatal("failed login did not retain its anonymous identity")
+		}
+		restarted := &Downloader{cfg: d.cfg, providerHosts: map[string]string{}}
+		restarted.client = &http.Client{Transport: transport}
+		restarted.limiter = newRequestLimiter(8, time.Nanosecond)
+		d = restarted
+	}
+	if len(devices) != 2 || devices[0] != devices[1] {
+		t.Fatal("restart changed the rate-limited visitor identity or duplicated login requests")
+	}
+}

@@ -429,6 +429,10 @@ func NativeRequest(raw string) (result string) {
 		if errors.Is(err, errNativeLocalFile) {
 			envelope["code"] = "local_media"
 		}
+		var authorization *sourceAuthorizationError
+		if errors.As(err, &authorization) {
+			envelope["code"] = "source_verification"
+		}
 		var backoff *requestBackoff
 		if errors.As(err, &backoff) {
 			envelope["code"] = "source_blocked"
@@ -802,18 +806,7 @@ func (engine *nativeEngine) nativeCatalog(ctx context.Context, input nativeInput
 			result.HasMore = page < totalPages
 		}
 	case sourceHuangdou:
-		client := newHuangdouAPIClient(d)
-		var decoded any
-		err = client.call(ctx, "/drama/list", map[string]any{"page": strconv.Itoa(page), "page_size": "30"}, &decoded)
-		if err == nil {
-			rows := huangdouList(decoded)
-			for _, row := range rows {
-				if drama := huangdouDramaFromMap(row); drama.ID != "" {
-					items = append(items, drama)
-				}
-			}
-			result.HasMore = len(rows) >= 30
-		}
+		items, result.HasMore, err = d.fetchHuangdouCatalogPage(ctx, page)
 	case sourceHuangguoAI:
 		items, result.HasMore, err = d.fetchHuangguoAICatalogPage(ctx, page, category)
 		var aggregated *huangguoAICatalogError
@@ -898,6 +891,9 @@ func (engine *nativeEngine) nativeDetail(ctx context.Context, drama nativeDrama)
 		raw, chapters, err = engine.downloader.fetchHanxiaoquanDetail(ctx, sourceID)
 	default:
 		title, chapters, err = engine.downloader.GetHuangguoChapters(ctx, source, sourceID)
+	}
+	if fetching, _ := ctx.Value(nativeMetadataFetchKey{}).(bool); fetching && source == sourceGuipian && raw.ID == drama.ID && errors.Is(err, errGuipianEmptyPlaylist) {
+		return map[string]any{"drama": mergeNativeDrama(drama, nativeNormalize(raw)), "chapters": []Chapter{}, "warning": ""}, nil
 	}
 	if err != nil {
 		return nil, err

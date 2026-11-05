@@ -58,6 +58,19 @@ func TestSourceRetryKeepsAutomaticRetryPastLimit(t *testing.T) {
 	}
 }
 
+func TestSourceRetryWaitsForLegacyLoginRateLimit(t *testing.T) {
+	engine := &nativeEngine{}
+	failure := &legacyAPIError{code: "4007", message: "login too frequently"}
+	started := time.Now()
+	until, temporary := engine.sourceRetryDelay(fmt.Errorf("visitor login: %w", failure))
+	if !temporary || until.Before(started.Add(time.Minute)) || until.After(time.Now().Add(time.Minute)) {
+		t.Fatal("visitor rate limit did not receive a one-minute retry delay", until, temporary)
+	}
+	if _, temporary := engine.sourceRetryDelay(errors.Join(failure, errors.New("invalid protocol"))); temporary {
+		t.Fatal("visitor rate limit hid a permanent failure")
+	}
+}
+
 func TestSourceRetryNeverRepeatsTerminalFailures(t *testing.T) {
 	engine := &nativeEngine{}
 	verify := &requestBackoff{host: "huangguo.video", status: http.StatusForbidden, until: time.Now().Add(time.Minute), verify: true}

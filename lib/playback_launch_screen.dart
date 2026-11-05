@@ -129,11 +129,13 @@ class _PlaybackLaunchScreenState extends State<PlaybackLaunchScreen> {
             ],
           ),
         );
-        if (accepted != true) {
-          if (mounted) Navigator.of(context).maybePop();
+        if (!mounted ||
+            generation != _generation ||
+            _profileEpoch != widget.store.profileEpoch) {
           return;
         }
-        if (!mounted) {
+        if (accepted != true) {
+          Navigator.of(context).maybePop();
           return;
         }
       }
@@ -159,7 +161,11 @@ class _PlaybackLaunchScreenState extends State<PlaybackLaunchScreen> {
             );
       });
     } catch (error) {
-      if (!mounted || generation != _generation) return;
+      if (!mounted ||
+          generation != _generation ||
+          _profileEpoch != widget.store.profileEpoch) {
+        return;
+      }
       setState(() => _error = error.toString());
       widget.repository.catalogUpdates.publish(
         widget.repository.catalogUpdates.current(widget.drama),

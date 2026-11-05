@@ -31,6 +31,8 @@ const (
 	guipianPageSize    = 24
 )
 
+var errGuipianEmptyPlaylist = errors.New("鬼片网线路暂无可播放分集")
+
 // guipianCategories 是站点各分类页给出的可翻页叶子分类（实测均能正常翻页）。
 // 大类聚合页（1/2/4）不提供翻页且与叶子分类内容重叠，故不单独列出。
 var guipianCategories = []nativeCategory{
@@ -354,7 +356,7 @@ func guipianPickPlaylist(body string) (string, []Chapter, error) {
 		}
 	}
 	if len(best) == 0 {
-		return "", nil, errors.New("鬼片网线路暂无可播放分集")
+		return "", nil, errGuipianEmptyPlaylist
 	}
 	sort.SliceStable(best, func(i, j int) bool {
 		left, _ := strconv.Atoi(best[i].EpisodeString(i + 1))
@@ -456,6 +458,9 @@ func (d *Downloader) fetchGuipianDetail(ctx context.Context, sourceID string) (D
 
 	_, chapters, err := guipianPickPlaylist(body)
 	if err != nil {
+		if errors.Is(err, errGuipianEmptyPlaylist) {
+			return drama, nil, err
+		}
 		return Drama{}, nil, err
 	}
 	// 分集 ID 里带的是完整播放页 URL，回填 sourceID 前缀便于播放阶段校验归属。

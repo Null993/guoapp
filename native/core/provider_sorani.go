@@ -359,6 +359,13 @@ func (d *Downloader) resolveSoraniMedia(ctx context.Context, task Task) (provide
 	row, _ := soraniPayload(value).(map[string]any)
 	address := mapString(row, "playUrl", "url")
 	if address == "" {
+		message := mapString(row, "message", "msg")
+		if strings.Contains(message, "登录") || strings.Contains(strings.ToLower(message), "login") {
+			return providerMedia{}, &sourceAuthorizationError{message: "青空需要登录，请在站源管理的“验证与授权”中导入本人登录会话；会话过期后需重新导入"}
+		}
+		if message != "" {
+			return providerMedia{}, errors.New("青空播放受限：" + truncate(message, 120))
+		}
 		return providerMedia{}, fmt.Errorf("青空次元该分集暂无可用播放地址（线路 %s）", lineCode)
 	}
 	media := providerMedia{URL: address, Referer: soraniSiteBaseURL + "/"}

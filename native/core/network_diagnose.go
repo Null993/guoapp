@@ -24,8 +24,18 @@ type proxyInterceptionError struct {
 }
 
 func (failure *proxyInterceptionError) Error() string {
-	return fmt.Sprintf("%s 返回 %dms 空 %d（无 Server 头），疑似本机代理拦截了该域名。请在“网络与资源”里改用直连，或换用不拦截该域名的代理节点/规则。",
+	return fmt.Sprintf("%s 返回 %dms 空 %d（无 Server 头），当前网络路径响应异常。可能涉及源站、DNS 或代理规则，请查看网络诊断中的备用路径结果。",
 		failure.host, max(1, int(failure.elapsed.Milliseconds())), failure.status)
+}
+
+func emptyRouteNotFound(response *http.Response) bool {
+	return response != nil && response.StatusCode == http.StatusNotFound && response.ContentLength == 0 && strings.TrimSpace(response.Header.Get("Server")) == ""
+}
+
+func yeguoRouteBadRequest(request *http.Request, response *http.Response) bool {
+	return response != nil && response.StatusCode == http.StatusBadRequest &&
+		providerSourceForURL(request.URL.String()) == sourceYeguo && automaticRequestReplayable(request) &&
+		strings.HasPrefix(strings.ToLower(response.Header.Get("Content-Type")), "text/plain")
 }
 
 func requestTimingContext(ctx context.Context) context.Context {

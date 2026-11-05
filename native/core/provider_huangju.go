@@ -144,7 +144,9 @@ func (d *Downloader) fetchHuangjuCatalogPage(ctx context.Context, page int, cate
 	if page < 1 || page > 1000000 || len(query) > 1024 || !validNativeCategory(sourceHuangju, category) {
 		return nil, false, errors.New("剧果目录查询参数无效")
 	}
-	values := url.Values{"page": {strconv.Itoa(page)}}
+	requestPage := (page-1)/3 + 1
+	offset := (page - 1) % 3 * 20
+	values := url.Values{"page": {strconv.Itoa(requestPage)}, "pageSize": {"60"}}
 	switch {
 	case query != "":
 		values.Set("q", query)
@@ -160,6 +162,16 @@ func (d *Downloader) fetchHuangjuCatalogPage(ctx context.Context, page int, cate
 		return nil, false, err
 	}
 	row, _ := huangjuPayload(response.value).(map[string]any)
+	if size, valid := huangjuInteger(row["pageSize"], 500); valid && size != 60 && requestPage != page {
+		values.Set("page", strconv.Itoa(page))
+		values.Set("pageSize", "20")
+		response, err = d.huangjuClient().get(ctx, "/dramas", values, 4<<20)
+		if err != nil {
+			return nil, false, err
+		}
+		row, _ = huangjuPayload(response.value).(map[string]any)
+		requestPage, offset = page, 0
+	}
 	rows, valid := row["items"].([]any)
 	if !valid || len(rows) > 500 {
 		return nil, false, errors.New("剧果目录数据格式无效")
@@ -173,24 +185,31 @@ func (d *Downloader) fetchHuangjuCatalogPage(ctx context.Context, page int, cate
 	}
 	if row["page"] != nil {
 		actualPage, valid := huangjuInteger(row["page"], 1000000)
-		if !valid || actualPage != page {
+		if !valid || actualPage != requestPage {
 			return nil, false, errors.New("剧果返回的页码与请求不符")
 		}
 	}
 	if len(rows) > pageSize {
 		return nil, false, errors.New("剧果分页数据格式无效")
 	}
-	hasMore := len(rows) >= pageSize
+	logicalSize := pageSize
+	if pageSize == 60 {
+		logicalSize = 20
+	} else {
+		offset = 0
+	}
+	hasMore := offset+logicalSize < len(rows) || len(rows) >= pageSize
 	if row["total"] != nil {
 		total, valid := huangjuInteger(row["total"], 100000000)
 		if !valid || total < len(rows) {
 			return nil, false, errors.New("剧果分页总数无效")
 		}
-		hasMore = page < (total+pageSize-1)/pageSize
+		hasMore = (requestPage-1)*pageSize+offset+logicalSize < total
 	}
 	if hasMore && len(rows) == 0 {
 		return nil, false, errors.New("剧果未返回应有的目录页，请重试")
 	}
+	rows = rows[min(offset, len(rows)):min(offset+logicalSize, len(rows))]
 	items := make([]Drama, 0, len(rows))
 	seen := map[string]bool{}
 	for _, entry := range rows {

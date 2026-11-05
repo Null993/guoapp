@@ -50,6 +50,35 @@ class StatusFixtureRepository extends FixtureRepository {
       SourceStatus.fromJson({'source': source, 'count': 5, 'page': 2});
 }
 
+class SoraniAccessFixtureRepository extends StatusFixtureRepository {
+  Map<String, String>? saved;
+
+  @override
+  Future<Map<String, dynamic>> sourceAccess(String source) async => {
+    'url': 'https://www.sorani.net',
+    'origin': 'https://api.sorani.cc',
+    'configured': false,
+  };
+
+  @override
+  Future<Map<String, dynamic>> saveSourceAccess(
+    String source, {
+    required String origin,
+    String cookie = '',
+    String userAgent = '',
+    String accessToken = '',
+    String deviceId = '',
+  }) async {
+    saved = {
+      'source': source,
+      'origin': origin,
+      'accessToken': accessToken,
+      'deviceId': deviceId,
+    };
+    return {'configured': true};
+  }
+}
+
 class UpdateBatchRepository extends FixtureRepository {
   final running = <String, bool>{};
   final failureReasons = <String, String>{};
@@ -150,6 +179,38 @@ Future<ScriptedStore> _store(
 }
 
 void main() {
+  testWidgets('Sorani authorization accepts a token bound to the API origin', (
+    tester,
+  ) async {
+    tester.view.physicalSize = const Size(1200, 2400);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.reset);
+    final store = await _store([SourceSite.sorani]);
+    final repository = SoraniAccessFixtureRepository();
+    await tester.pumpWidget(_screen(repository, store, 'sorani-access'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const ValueKey('access-sorani')));
+    await tester.pumpAndSettle();
+    final token = find.widgetWithText(
+      TextField,
+      '本人登录令牌（accessToken / Bearer）',
+    );
+    expect(token, findsOneWidget);
+    expect(tester.widget<TextField>(token).obscureText, isTrue);
+    await tester.enterText(token, 'Bearer synthetic-token');
+    await tester.tap(find.text('保存并继续'));
+    await tester.pumpAndSettle();
+    expect(repository.saved, {
+      'source': 'sorani',
+      'origin': 'https://api.sorani.cc',
+      'accessToken': 'Bearer synthetic-token',
+      'deviceId': '',
+    });
+    expect(tester.takeException(), isNull);
+    await tester.pumpWidget(const SizedBox.shrink());
+    store.dispose();
+  });
+
   testWidgets(
     'retryable update error inside the 黄果 group renders the card without exception',
     (tester) async {

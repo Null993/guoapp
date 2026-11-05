@@ -34,6 +34,7 @@ def main():
         evidence = json.loads(report.read_text(encoding='utf-8')) if report.exists() else {
             'ok': False, 'error': '程序未生成冒烟报告', 'exitCode': completed.returncode,
         }
+        evidence['processExitCode'] = completed.returncode
         output = root / 'build' / 'windows-package-smoke.json'
         output.parent.mkdir(parents=True, exist_ok=True)
         output.write_text(json.dumps(evidence, indent=2) + '\n', encoding='utf-8')

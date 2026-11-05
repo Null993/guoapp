@@ -16,7 +16,7 @@ import (
 	"time"
 )
 
-const nativeSourceCatalogPageLimit = 1000
+const nativeSourceCatalogPageLimit = 1000000
 
 const nativeMetadataFlushInterval = 2 * time.Second
 
@@ -874,6 +874,10 @@ func (engine *nativeEngine) sourceRetryDelay(err error) (time.Time, bool) {
 			return engine.sourceRetryDelay(wrapped.Unwrap())
 		}
 	}
+	var legacy *legacyAPIError
+	if errors.As(err, &legacy) && legacy.code == "4007" {
+		return engine.sourceNow().Add(time.Minute), true
+	}
 	var backoff *requestBackoff
 	if errors.As(err, &backoff) {
 		temporary := backoff.status == http.StatusTooManyRequests || backoff.status == http.StatusRequestTimeout || backoff.status >= 500
@@ -1102,6 +1106,20 @@ func (engine *nativeEngine) fetchSourceMetadata(ctx context.Context, drama nativ
 	}()
 	result, err := engine.nativeDetail(ctx, drama)
 	if err != nil {
+		var rejected *huangdouAPIError
+		if sourceFromDramaID(drama.ID) == sourceHuangdou && errors.As(err, &rejected) && rejected.code == "2001" {
+			removed, lookupErr := engine.downloader.huangdouMetadataRemoved(ctx, drama)
+			if lookupErr != nil {
+				item.err = lookupErr
+				return item
+			}
+			if removed {
+				item.err = &sourceTransientError{status: http.StatusGone, message: "黄豆旧条目已无法访问，当前目录也未找到该编号"}
+				return item
+			}
+			item.err = &sourceTransientError{status: http.StatusServiceUnavailable, message: "黄豆目录仍包含该条目，详情暂时不可用: " + err.Error()}
+			return item
+		}
 		item.err = err
 		return item
 	}

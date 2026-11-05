@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'dart:io';
 import 'dart:ui' as ui;
 
+import 'package:duanju_app/app_layout.dart' show appVersion, appBuildCode;
 import 'package:duanju_app/core_bridge.dart';
 import 'package:duanju_app/local_store.dart';
 import 'package:duanju_app/models.dart';
@@ -56,14 +57,19 @@ void main() {
   final selected = const String.fromEnvironment(
     'SOURCE_IDS',
   ).split(',').where((id) => id.isNotEmpty).toSet();
+  final candidateLimit = const int.fromEnvironment(
+    'SOURCE_ATTEMPT_LIMIT',
+    defaultValue: 20,
+  ).clamp(3, 20);
   final report = <String, dynamic>{
-    'version': '0.2.82+89',
+    'version': '$appVersion+$appBuildCode',
     'platform': Platform.operatingSystem,
     'startedAt': DateTime.now().toUtc().toIso8601String(),
     'requiredPerSource': 3,
     'criteria':
         'first rendered frame and at least 5 seconds of advancing playback',
     'imagesDisabled': const bool.fromEnvironment('DISABLE_REMOTE_IMAGES'),
+    'allowInsecureTLS': const bool.fromEnvironment('SOURCE_ALLOW_INSECURE_TLS'),
     'proxyMode': const String.fromEnvironment(
       'SOURCE_PROXY_MODE',
       defaultValue: 'auto',
@@ -121,7 +127,11 @@ void main() {
       const proxy = String.fromEnvironment('SOURCE_PROXY_URL');
       expect(Uri.tryParse(proxy)?.hasAuthority, isTrue);
       await repository.saveResourceSettings(
-        const ResourceSettings(proxyMode: 'manual', proxyUrl: proxy),
+        const ResourceSettings(
+          proxyMode: 'manual',
+          proxyUrl: proxy,
+          allowInsecureTLS: bool.fromEnvironment('SOURCE_ALLOW_INSECURE_TLS'),
+        ),
       );
       report['proxyHost'] = Uri.parse(proxy).host;
     } else {
@@ -129,6 +139,9 @@ void main() {
         ResourceSettings(
           proxyMode: mode,
           proxyUrl: const String.fromEnvironment('SOURCE_PROXY_URL'),
+          allowInsecureTLS: const bool.fromEnvironment(
+            'SOURCE_ALLOW_INSECURE_TLS',
+          ),
         ),
       );
     }
@@ -229,7 +242,11 @@ void main() {
           );
         }
       }
-      for (var page = 1; page <= 3 && candidates.length < 20; page++) {
+      for (
+        var page = 1;
+        page <= 3 && candidates.length < candidateLimit;
+        page++
+      ) {
         CatalogPage? catalog;
         for (var retry = 0; retry < 2 && catalog == null; retry++) {
           try {
@@ -258,7 +275,7 @@ void main() {
       debugPrint(
         'SOURCE_PLAYBACK ${source.id} candidates=${candidates.length}',
       );
-      for (final drama in candidates.take(20)) {
+      for (final drama in candidates.take(candidateLimit)) {
         if ((result['successCount'] as int) >= 3) break;
         final attempt = <String, dynamic>{
           'id': drama.id,
@@ -433,7 +450,7 @@ void main() {
           );
         }
         final remaining =
-            candidates.length.clamp(0, 20) -
+            candidates.length.clamp(0, candidateLimit) -
             (result['attempts'] as List).length;
         if ((result['successCount'] as int) + remaining < 3) {
           result['stopReason'] =

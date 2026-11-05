@@ -263,7 +263,11 @@ func planNativeSourceResults(file nativeSourceResultsFile) (nativeSourceResultsI
 			return plan, fmt.Errorf("站源结果包含无法识别的站源：%s", firstNonEmpty(strings.TrimSpace(entry.Source), "空"))
 		}
 		category := strings.TrimSpace(entry.Category)
-		if category != "" && !validNativeCategory(source, category) {
+		validCategory := validNativeCategory(source, category)
+		if source == sourceHongguo && strings.HasPrefix(category, "recommendation:") {
+			validCategory = (hongguoRecommendationQuery{Genre: strings.TrimPrefix(category, "recommendation:")}).validate() == nil
+		}
+		if !validCategory {
 			return plan, fmt.Errorf("站源 %s 的分类 %s 无效", source, category)
 		}
 		key := nativeCatalogKey(source, category)

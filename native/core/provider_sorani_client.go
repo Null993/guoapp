@@ -68,6 +68,7 @@ func (client *soraniAPIClient) get(ctx context.Context, route string, query url.
 	request.Header.Set("Origin", client.site)
 
 	d := client.downloader
+	d.applySourceRequestAccess(request)
 	if d.limiter != nil {
 		release, err := d.limiter.acquire(ctx, request)
 		if err != nil {
@@ -100,6 +101,9 @@ func (client *soraniAPIClient) get(ctx context.Context, route string, query url.
 	observeSourceResponse(ctx, response)
 	blocked := catalogResponseBlockReason(response, data) != ""
 	if response.StatusCode < 200 || response.StatusCode >= 300 || blocked {
+		if response.StatusCode == http.StatusUnauthorized {
+			return nil, &sourceAuthorizationError{message: "青空登录会话已失效，请在站源管理的“验证与授权”中重新导入本人登录会话"}
+		}
 		return nil, d.catalogResponseError(request, response, data)
 	}
 	if readErr != nil || int64(len(data)) > limit {
@@ -117,6 +121,9 @@ func (client *soraniAPIClient) get(ctx context.Context, route string, query url.
 	// 上游统一用 code=200 表示成功；非 200 一律视为业务错误。
 	if row, ok := decoded.(map[string]any); ok {
 		if code := nativeText(row["code"]); code != "" && code != "200" {
+			if code == "401" {
+				return nil, &sourceAuthorizationError{message: "青空需要登录，请在站源管理的“验证与授权”中导入本人登录会话"}
+			}
 			message := mapString(row, "message", "msg")
 			if message == "" {
 				message = "上游返回错误码 " + code

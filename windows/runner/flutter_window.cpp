@@ -8,11 +8,27 @@
 FlutterWindow::FlutterWindow(const flutter::DartProject& project)
     : project_(project) {}
 
-FlutterWindow::~FlutterWindow() {}
+FlutterWindow::~FlutterWindow() { OnDestroy(); }
 
 bool FlutterWindow::OnCreate() {
   if (!Win32Window::OnCreate()) {
     return false;
+  }
+
+  wchar_t executable_path[32768]{};
+  const auto path_length = GetModuleFileNameW(nullptr, executable_path, 32768);
+  if (path_length > 0 && path_length < 32768) {
+    const std::wstring path(executable_path, path_length);
+    const auto directory = path.substr(0, path.find_last_of(L"\\/") + 1);
+    for (const auto name : {L"duanju_core.dll", L"libmpv-2.dll", L"libwinpthread-1.dll"}) {
+      const auto library = LoadLibraryExW((directory + name).c_str(), nullptr,
+          LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR | LOAD_LIBRARY_SEARCH_DEFAULT_DIRS);
+      if (library) {
+        HMODULE pinned = nullptr;
+        GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_PIN | GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS,
+            reinterpret_cast<LPCWSTR>(library), &pinned);
+      }
+    }
   }
 
   RECT frame = GetClientArea();
@@ -78,6 +94,9 @@ LRESULT
 FlutterWindow::MessageHandler(HWND hwnd, UINT const message,
                               WPARAM const wparam,
                               LPARAM const lparam) noexcept {
+  if (message == WM_DESTROY) {
+    return Win32Window::MessageHandler(hwnd, message, wparam, lparam);
+  }
   // Give Flutter, including plugins, an opportunity to handle window messages.
   if (flutter_controller_) {
     std::optional<LRESULT> result =
@@ -90,7 +109,9 @@ FlutterWindow::MessageHandler(HWND hwnd, UINT const message,
 
   switch (message) {
     case WM_FONTCHANGE:
-      flutter_controller_->engine()->ReloadSystemFonts();
+      if (flutter_controller_) {
+        flutter_controller_->engine()->ReloadSystemFonts();
+      }
       break;
   }
 

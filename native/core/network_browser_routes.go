@@ -154,9 +154,12 @@ func (transport *sourceBrowserTransport) roundTripRoutes(request *http.Request, 
 		case result := <-results:
 			stop := active[result.id]
 			delete(active, result.id)
-			if result.err == nil && proxyURL != "" && result.response.StatusCode == http.StatusNotFound && result.response.ContentLength == 0 && proxyInterceptionSuspected(request.URL.Hostname(), result.response.StatusCode, result.response.Header, nil, result.elapsed) {
+			if result.err == nil && (emptyRouteNotFound(result.response) || yeguoRouteBadRequest(request, result.response)) {
 				result.response.Body.Close()
-				result.err = &proxyInterceptionError{host: request.URL.Hostname(), status: result.response.StatusCode, elapsed: result.elapsed}
+				result.err = &sourceTransientError{status: http.StatusBadGateway, message: fmt.Sprintf("%s HTTP %d，当前线路返回异常文本响应", request.URL.Hostname(), result.response.StatusCode)}
+				if result.response.StatusCode == http.StatusNotFound {
+					result.err = &proxyInterceptionError{host: request.URL.Hostname(), status: result.response.StatusCode, elapsed: result.elapsed}
+				}
 			}
 			if result.err != nil {
 				stop()

@@ -52,14 +52,15 @@ func (transport *cdnTransport) RoundTrip(request *http.Request) (*http.Response,
 	if preferred.address != "" && time.Now().Before(preferred.expires) {
 		tried[preferred.address] = true
 		response, err = transport.roundTripAddress(request, proxyURL, routeKey, preferred.address)
-		if err == nil {
-			return response, nil
-		}
 	} else {
 		response, err = transport.base.RoundTrip(request)
-		if err == nil {
-			return response, nil
-		}
+	}
+	if err == nil && !emptyRouteNotFound(response) {
+		return response, nil
+	}
+	if err == nil {
+		err = &proxyInterceptionError{host: request.URL.Hostname(), status: response.StatusCode, elapsed: responseElapsed(request, response)}
+		response.Body.Close()
 	}
 	if request.Context().Err() != nil {
 		return nil, request.Context().Err()
@@ -80,6 +81,10 @@ func (transport *cdnTransport) RoundTrip(request *http.Request) (*http.Response,
 			}
 			tried[address] = true
 			response, err = transport.roundTripAddress(request, proxyURL, routeKey, address)
+			if err == nil && emptyRouteNotFound(response) {
+				err = &proxyInterceptionError{host: request.URL.Hostname(), status: response.StatusCode, elapsed: responseElapsed(request, response)}
+				response.Body.Close()
+			}
 			if err == nil {
 				transport.mu.Lock()
 				transport.preferred[routeKey] = cdnRoute{address: address, expires: entry.expires}

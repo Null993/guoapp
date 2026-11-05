@@ -145,7 +145,11 @@ func (engine *nativeEngine) checkSource(ctx context.Context, source string, sele
 				return fmt.Sprintf("%d 集，检测第 %s 集", len(chapters), item.EpisodeString(1)), nil
 			}
 		}
-		return "", errors.New("没有可用于检测的免费分集")
+		if len(chapters) == 0 {
+			return "", errors.New("没有可用于检测的分集")
+		}
+		chapter = chapters[0]
+		return fmt.Sprintf("%d 集，检测第 %s 集的站点实际授权", len(chapters), chapter.EpisodeString(1)), nil
 	}) {
 		return failure
 	}

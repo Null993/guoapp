@@ -35,6 +35,10 @@ type sourceTransientError struct {
 func (failure *sourceTransientError) Error() string { return failure.message }
 
 func isPermanentSourceError(err error) bool {
+	var authorization *sourceAuthorizationError
+	if errors.As(err, &authorization) {
+		return true
+	}
 	var verification *tls.CertificateVerificationError
 	if errors.As(err, &verification) {
 		return true
@@ -303,14 +307,7 @@ func (d *Downloader) doPreparedCatalogRequest(request *http.Request, timeout tim
 	if prepare != nil {
 		prepare(request)
 	}
-	if access, configured := d.accessForRequest(request); configured {
-		if access.Cookie != "" {
-			request.Header.Set("Cookie", access.Cookie)
-		}
-		if access.UserAgent != "" {
-			request.Header.Set("User-Agent", access.UserAgent)
-		}
-	}
+	d.applySourceRequestAccess(request)
 	response, err := d.client.Do(request)
 	if err != nil {
 		cancel()

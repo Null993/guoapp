@@ -162,6 +162,7 @@ func (d *Downloader) doMediaRequestWithClient(request *http.Request, client *htt
 
 func (d *Downloader) doMediaRequestAttempt(request *http.Request, client *http.Client) (*http.Response, error) {
 	mediaRequestHeaders(request, request.Header.Get("Referer"))
+	d.applySourceRequestAccess(request)
 	if credentials, _ := request.Context().Value(providerMediaCredentialsKey{}).(*providerMediaCredentials); credentials != nil {
 		if err := credentials.apply(request); err != nil {
 			return nil, err

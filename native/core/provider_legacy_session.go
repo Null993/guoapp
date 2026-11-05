@@ -178,6 +178,9 @@ func (d *Downloader) bootstrapLegacySession(ctx context.Context, state legacySes
 				return access, state, errors.New("无法生成黄果访客标识")
 			}
 			state.DeviceID = prefix + strconv.FormatInt(time.Now().UnixMilli(), 10)
+			if err := d.saveLegacySession(state); err != nil {
+				return access, state, fmt.Errorf("无法保存黄果访客标识: %w", err)
+			}
 		}
 		access.DeviceID, access.Token = state.DeviceID, state.Token
 		if access.Token == "" {
