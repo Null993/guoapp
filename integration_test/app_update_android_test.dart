@@ -10,7 +10,7 @@ import 'package:path_provider/path_provider.dart';
 void main() {
   final binding = IntegrationTestWidgetsFlutterBinding.ensureInitialized();
   final report = <String, dynamic>{
-    'version': '0.2.85+92',
+    'version': '$appVersion+$appBuildCode',
     'platform': 'android',
     'ok': false,
   };

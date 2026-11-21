@@ -8,6 +8,33 @@ import (
 	"testing"
 )
 
+func TestHuangguoAIPlaybackUsesSelectedEpisodeAndExcludesPreview(t *testing.T) {
+	for _, fixture := range []struct {
+		name, payload string
+		wantSuccess   bool
+	}{
+		{"full", `{"status":1,"data":{"id":"100","ep":2,"streams":{"main":"https://cdn.example.test/main.mp4","hevc":"https://cdn.example.test/backup.mp4","preview":"https://cdn.example.test/preview.mp4"}}}`, true},
+		{"wrong episode", `{"status":1,"data":{"id":"100","ep":1,"streams":{"main":"https://cdn.example.test/other.mp4"}}}`, false},
+		{"preview only", `{"status":1,"data":{"id":"100","ep":2,"streams":{"preview":"https://cdn.example.test/preview.mp4"}}}`, false},
+	} {
+		t.Run(fixture.name, func(t *testing.T) {
+			d := sourceFixtureDownloader(t, func(request *http.Request) (*http.Response, error) {
+				if request.Method != http.MethodPost || request.URL.Path != "/api/videos/100/episodes/2/playback" {
+					t.Fatalf("unexpected request: %s %s", request.Method, request.URL.Path)
+				}
+				return sourceFixtureResponse(request, http.StatusOK, fixture.payload), nil
+			})
+			media, err := d.fetchHuangguoAIPlayback(context.Background(), "100", 2)
+			if (err == nil) != fixture.wantSuccess {
+				t.Fatalf("unexpected result: %+v %v", media, err)
+			}
+			if fixture.wantSuccess && (media.URL != "https://cdn.example.test/main.mp4" || len(media.Variants) != 1 || media.Variants[0].URL != "https://cdn.example.test/backup.mp4") {
+				t.Fatalf("unexpected routes: %+v", media)
+			}
+		})
+	}
+}
+
 func TestHuangguoVideoUsesDomesticOriginAcrossDetailAndMedia(t *testing.T) {
 	var paths []string
 	d := sourceFixtureDownloader(t, func(r *http.Request) (*http.Response, error) {

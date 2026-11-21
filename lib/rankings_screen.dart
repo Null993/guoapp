@@ -2,11 +2,13 @@ import 'dart:async';
 
 import 'package:flutter/material.dart';
 
+import 'app_layout.dart';
 import 'catalog_filters.dart';
 import 'core_bridge.dart';
 import 'detail_screen.dart';
 import 'local_store.dart';
 import 'models.dart';
+import 'page_tab_swipe.dart';
 import 'ranking_models.dart';
 import 'widgets.dart';
 
@@ -365,163 +367,173 @@ class _RankingsScreenState extends State<RankingsScreen> {
                 ),
               ),
             Expanded(
-              child: _loading && items.isEmpty
-                  ? Center(
-                      child: Column(
-                        mainAxisSize: MainAxisSize.min,
-                        children: [
-                          const CircularProgressIndicator(),
-                          if (_board?.source == 'hongguo') ...[
-                            const SizedBox(height: 16),
-                            const Text('正在获取榜单，数据未完整返回时会自动重试'),
+              child: PageTabSwipe(
+                onStep: AppLayout.isTelevision(context) || boards.length < 2
+                    ? null
+                    : (step) {
+                        final index = boards.indexOf(_board!) + step;
+                        if (index >= 0 && index < boards.length) {
+                          _select(boards[index]);
+                        }
+                      },
+                child: _loading && items.isEmpty
+                    ? Center(
+                        child: Column(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            const CircularProgressIndicator(),
+                            if (_board?.source == 'hongguo') ...[
+                              const SizedBox(height: 16),
+                              const Text('正在获取榜单，数据未完整返回时会自动重试'),
+                            ],
                           ],
-                        ],
-                      ),
-                    )
-                  : items.isEmpty
-                  ? StatusPanel(
-                      title: _error == null ? '暂无榜单内容' : '榜单暂时无法加载',
-                      message: _error ?? '当前站源暂无可显示的榜单。',
-                      onRetry: _board == null
-                          ? _initialize
-                          : () => _load(force: true),
-                    )
-                  : RefreshIndicator(
-                      onRefresh: () => _load(force: true),
-                      child: ListView.builder(
-                        key: ValueKey('ranking-${_board!.id}'),
-                        controller: _scroll,
-                        physics: const AlwaysScrollableScrollPhysics(),
-                        padding: const EdgeInsets.fromLTRB(12, 0, 12, 24),
-                        itemCount: items.length + 1,
-                        itemBuilder: (context, index) {
-                          if (index == items.length) {
-                            return Center(
-                              child: _more
-                                  ? const Padding(
-                                      padding: EdgeInsets.all(16),
-                                      child: CircularProgressIndicator(),
-                                    )
-                                  : _hasMore
-                                  ? OutlinedButton(
-                                      onPressed: () => _load(more: true),
-                                      child: const Text('加载更多'),
-                                    )
-                                  : const Padding(
-                                      padding: EdgeInsets.all(16),
-                                      child: Text('已显示全部榜单'),
+                        ),
+                      )
+                    : items.isEmpty
+                    ? StatusPanel(
+                        title: _error == null ? '暂无榜单内容' : '榜单暂时无法加载',
+                        message: _error ?? '当前站源暂无可显示的榜单。',
+                        onRetry: _board == null
+                            ? _initialize
+                            : () => _load(force: true),
+                      )
+                    : RefreshIndicator(
+                        onRefresh: () => _load(force: true),
+                        child: ListView.builder(
+                          key: ValueKey('ranking-${_board!.id}'),
+                          controller: _scroll,
+                          physics: const AlwaysScrollableScrollPhysics(),
+                          padding: const EdgeInsets.fromLTRB(12, 0, 12, 24),
+                          itemCount: items.length + 1,
+                          itemBuilder: (context, index) {
+                            if (index == items.length) {
+                              return Center(
+                                child: _more
+                                    ? const Padding(
+                                        padding: EdgeInsets.all(16),
+                                        child: CircularProgressIndicator(),
+                                      )
+                                    : _hasMore
+                                    ? OutlinedButton(
+                                        onPressed: () => _load(more: true),
+                                        child: const Text('加载更多'),
+                                      )
+                                    : const Padding(
+                                        padding: EdgeInsets.all(16),
+                                        child: Text('已显示全部榜单'),
+                                      ),
+                              );
+                            }
+                            final item = items[index];
+                            return Card(
+                              child: InkWell(
+                                key: ValueKey(
+                                  'rank-${item.rank}-${item.drama.id}',
+                                ),
+                                borderRadius: BorderRadius.circular(12),
+                                onFocusChange: (focused) {
+                                  if (focused) {
+                                    Scrollable.ensureVisible(
+                                      context,
+                                      alignment: .4,
+                                    );
+                                  }
+                                },
+                                onTap: () => Navigator.push<void>(
+                                  context,
+                                  MaterialPageRoute(
+                                    builder: (_) => DetailScreen(
+                                      drama: item.drama,
+                                      repository: widget.repository,
+                                      store: widget.store,
                                     ),
-                            );
-                          }
-                          final item = items[index];
-                          return Card(
-                            child: InkWell(
-                              key: ValueKey(
-                                'rank-${item.rank}-${item.drama.id}',
-                              ),
-                              borderRadius: BorderRadius.circular(12),
-                              onFocusChange: (focused) {
-                                if (focused) {
-                                  Scrollable.ensureVisible(
-                                    context,
-                                    alignment: .4,
-                                  );
-                                }
-                              },
-                              onTap: () => Navigator.push<void>(
-                                context,
-                                MaterialPageRoute(
-                                  builder: (_) => DetailScreen(
-                                    drama: item.drama,
-                                    repository: widget.repository,
-                                    store: widget.store,
+                                  ),
+                                ),
+                                child: Padding(
+                                  padding: const EdgeInsets.all(12),
+                                  child: Row(
+                                    children: [
+                                      SizedBox(
+                                        width: 36,
+                                        child: Text(
+                                          '${item.rank}',
+                                          style: TextStyle(
+                                            fontSize: 24,
+                                            fontWeight: FontWeight.w800,
+                                            color: item.rank <= 3
+                                                ? Theme.of(
+                                                    context,
+                                                  ).colorScheme.primary
+                                                : Theme.of(context)
+                                                      .colorScheme
+                                                      .onSurfaceVariant,
+                                          ),
+                                        ),
+                                      ),
+                                      SizedBox(
+                                        width: 72,
+                                        height: 108,
+                                        child: DramaCover(
+                                          drama: item.drama,
+                                          episodeLabel:
+                                              item.drama.source == 'hongguo' &&
+                                                  item.drama.episodes <= 3 &&
+                                                  !_verifiedCounts.contains(
+                                                    item.drama.id,
+                                                  )
+                                              ? '集数待确认'
+                                              : null,
+                                          repository: widget.repository,
+                                          radius: 8,
+                                        ),
+                                      ),
+                                      const SizedBox(width: 14),
+                                      Expanded(
+                                        child: Column(
+                                          crossAxisAlignment:
+                                              CrossAxisAlignment.start,
+                                          children: [
+                                            Text(
+                                              item.drama.title,
+                                              maxLines: 2,
+                                              overflow: TextOverflow.ellipsis,
+                                              style: Theme.of(
+                                                context,
+                                              ).textTheme.titleMedium,
+                                            ),
+                                            if (item.drama.category.isNotEmpty)
+                                              Text(
+                                                item.drama.category,
+                                                maxLines: 1,
+                                                overflow: TextOverflow.ellipsis,
+                                              ),
+                                            if (item.metric.isNotEmpty)
+                                              Padding(
+                                                padding: const EdgeInsets.only(
+                                                  top: 8,
+                                                ),
+                                                child: Text(
+                                                  item.metric,
+                                                  style: TextStyle(
+                                                    color: Theme.of(
+                                                      context,
+                                                    ).colorScheme.primary,
+                                                  ),
+                                                ),
+                                              ),
+                                          ],
+                                        ),
+                                      ),
+                                      const Icon(Icons.chevron_right_rounded),
+                                    ],
                                   ),
                                 ),
                               ),
-                              child: Padding(
-                                padding: const EdgeInsets.all(12),
-                                child: Row(
-                                  children: [
-                                    SizedBox(
-                                      width: 36,
-                                      child: Text(
-                                        '${item.rank}',
-                                        style: TextStyle(
-                                          fontSize: 24,
-                                          fontWeight: FontWeight.w800,
-                                          color: item.rank <= 3
-                                              ? Theme.of(
-                                                  context,
-                                                ).colorScheme.primary
-                                              : Theme.of(
-                                                  context,
-                                                ).colorScheme.onSurfaceVariant,
-                                        ),
-                                      ),
-                                    ),
-                                    SizedBox(
-                                      width: 72,
-                                      height: 108,
-                                      child: DramaCover(
-                                        drama: item.drama,
-                                        episodeLabel:
-                                            item.drama.source == 'hongguo' &&
-                                                item.drama.episodes <= 3 &&
-                                                !_verifiedCounts.contains(
-                                                  item.drama.id,
-                                                )
-                                            ? '集数待确认'
-                                            : null,
-                                        repository: widget.repository,
-                                        radius: 8,
-                                      ),
-                                    ),
-                                    const SizedBox(width: 14),
-                                    Expanded(
-                                      child: Column(
-                                        crossAxisAlignment:
-                                            CrossAxisAlignment.start,
-                                        children: [
-                                          Text(
-                                            item.drama.title,
-                                            maxLines: 2,
-                                            overflow: TextOverflow.ellipsis,
-                                            style: Theme.of(
-                                              context,
-                                            ).textTheme.titleMedium,
-                                          ),
-                                          if (item.drama.category.isNotEmpty)
-                                            Text(
-                                              item.drama.category,
-                                              maxLines: 1,
-                                              overflow: TextOverflow.ellipsis,
-                                            ),
-                                          if (item.metric.isNotEmpty)
-                                            Padding(
-                                              padding: const EdgeInsets.only(
-                                                top: 8,
-                                              ),
-                                              child: Text(
-                                                item.metric,
-                                                style: TextStyle(
-                                                  color: Theme.of(
-                                                    context,
-                                                  ).colorScheme.primary,
-                                                ),
-                                              ),
-                                            ),
-                                        ],
-                                      ),
-                                    ),
-                                    const Icon(Icons.chevron_right_rounded),
-                                  ],
-                                ),
-                              ),
-                            ),
-                          );
-                        },
+                            );
+                          },
+                        ),
                       ),
-                    ),
+              ),
             ),
           ],
         ),

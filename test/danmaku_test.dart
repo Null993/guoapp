@@ -48,6 +48,26 @@ Future<void> flushDanmaku() async {
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
 
+  test('saved danmaku filters block keywords and nearby repeated text', () {
+    const filter = DanmakuFilter(keywords: '剧透\nspam', hideDuplicates: true);
+    final preferences = PlaybackPreferences.fromJson(
+      const PlaybackPreferences(danmakuFilter: filter).toJson(),
+    );
+    const messages = [
+      DanmakuItem(id: '1', text: '好看', timeMs: 0),
+      DanmakuItem(id: '2', text: '好看', timeMs: 5000),
+      DanmakuItem(id: '3', text: 'SPAM message', timeMs: 6000),
+      DanmakuItem(id: '4', text: '不要剧透', timeMs: 7000),
+      DanmakuItem(id: '5', text: '好看', timeMs: 8000),
+    ];
+    final selected = preferences.danmakuFilter.apply(messages);
+    expect(selected.map((item) => item.id), ['1', '5']);
+    expect(
+      PlaybackPreferences.fromJson({}).danmakuFilter.apply(messages).length,
+      5,
+    );
+  });
+
   test(
     'danmaku keeps zero timestamps and text while rejecting unverified items and windows',
     () {

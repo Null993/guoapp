@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
+import 'dart:math';
 import 'dart:ui' as ui;
 
 import 'package:duanju_app/app_layout.dart' show appVersion, appBuildCode;
@@ -61,11 +62,27 @@ void main() {
     'SOURCE_ATTEMPT_LIMIT',
     defaultValue: 20,
   ).clamp(3, 20);
+  const randomSeed = int.fromEnvironment('SOURCE_RANDOM_SEED');
+  final episodeOverrides = Map<String, int>.from(
+    jsonDecode(
+          const String.fromEnvironment(
+            'SOURCE_EPISODE_OVERRIDES',
+            defaultValue: '{}',
+          ),
+        )
+        as Map,
+  );
+  final randomPages = const int.fromEnvironment(
+    'SOURCE_RANDOM_PAGES',
+    defaultValue: 1,
+  ).clamp(1, 3);
   final report = <String, dynamic>{
     'version': '$appVersion+$appBuildCode',
     'platform': Platform.operatingSystem,
     'startedAt': DateTime.now().toUtc().toIso8601String(),
     'requiredPerSource': 3,
+    if (randomSeed != 0) 'randomSeed': randomSeed,
+    if (randomSeed != 0) 'randomPages': randomPages,
     'criteria':
         'first rendered frame and at least 5 seconds of advancing playback',
     'imagesDisabled': const bool.fromEnvironment('DISABLE_REMOTE_IMAGES'),
@@ -211,7 +228,7 @@ void main() {
     }, timeout: const Timeout(Duration(minutes: 5)));
   }
 
-  for (final source in SourceSite.values) {
+  for (final (sourceIndex, source) in SourceSite.values.indexed) {
     if (selected.isNotEmpty && !selected.contains(source.id)) continue;
     testWidgets('3 different real titles: ${source.id}', (tester) async {
       final result = <String, dynamic>{
@@ -227,6 +244,7 @@ void main() {
       await save();
       final seen = <String>{};
       final candidates = <Drama>[];
+      final random = randomSeed == 0 ? null : Random(randomSeed + sourceIndex);
       for (final seed in const String.fromEnvironment(
         'SOURCE_SEED_IDS',
       ).split(',')) {
@@ -244,7 +262,9 @@ void main() {
       }
       for (
         var page = 1;
-        page <= 3 && candidates.length < candidateLimit;
+        page <= 3 &&
+            (candidates.length < candidateLimit ||
+                random != null && page <= randomPages);
         page++
       ) {
         CatalogPage? catalog;
@@ -271,6 +291,7 @@ void main() {
         }
         if (!catalog.hasMore) break;
       }
+      if (random != null) candidates.shuffle(random);
       result['catalogCandidates'] = candidates.length;
       debugPrint(
         'SOURCE_PLAYBACK ${source.id} candidates=${candidates.length}',
@@ -295,10 +316,9 @@ void main() {
           final detail = await repository.detail(drama);
           attempt['title'] = detail.drama.title;
           if (detail.episodes.isEmpty) throw StateError('No episodes');
-          const requestedEpisode = int.fromEnvironment(
-            'SOURCE_EPISODE_NUMBER',
-            defaultValue: 0,
-          );
+          final requestedEpisode =
+              episodeOverrides[drama.id] ??
+              const int.fromEnvironment('SOURCE_EPISODE_NUMBER');
           final episode = requestedEpisode > 0
               ? detail.episodes.firstWhere(
                   (episode) => episode.number == requestedEpisode,
@@ -306,7 +326,7 @@ void main() {
                     'Requested episode $requestedEpisode not returned',
                   ),
                 )
-              : detail.episodes.first;
+              : detail.episodes[random?.nextInt(detail.episodes.length) ?? 0];
           attempt['episode'] = episode.number;
           attempt['episodeId'] = episode.id;
           attempt['stage'] = 'playback';

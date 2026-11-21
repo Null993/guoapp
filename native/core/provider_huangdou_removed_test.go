@@ -1,11 +1,33 @@
 package core
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"net/http"
 	"testing"
 )
+
+func TestHuangdouPlaybackAddsOnlyFullEpisodeLines(t *testing.T) {
+	d := sourceFixtureDownloader(t, func(request *http.Request) (*http.Response, error) {
+		if request.URL.Path != "/api/drama/play" {
+			t.Fatalf("unexpected playback endpoint: %s", request.URL.Path)
+		}
+		return sourceFixtureResponse(request, 200, `{"status":"y","data":{
+			"m3u8":"/main.m3u8","preview_m3u8":"/teaser.m3u8","hls_key":"0123456789abcdef0123456789abcdef","duration":20,
+			"lines":[{"url":"/main.m3u8"},{"url":"/teaser.m3u8"},{"url":"/short.m3u8","is_preview":true},
+			{"url":"ftp://bad.test/media.m3u8"},{"m3u8":"/backup.m3u8"},{"play_url":"/backup.m3u8"}]}}`), nil
+	})
+	client := newHuangdouAPIClient(d)
+	media, err := d.resolveHuangdouPlayback(context.Background(), client, "100", 2)
+	if err != nil || media.URL != huangdouBaseURL+"/main.m3u8" || len(media.Variants) != 1 {
+		t.Fatalf("unexpected result: %+v, %v", media, err)
+	}
+	backup := media.Variants[0]
+	if backup.URL != huangdouBaseURL+"/backup.m3u8" || backup.Referer != media.Referer || backup.Duration != media.Duration || !bytes.Equal(backup.HLSKey, media.HLSKey) {
+		t.Fatalf("backup lost episode media settings: %+v", backup)
+	}
+}
 
 func TestHuangdouMetadataRejectNeedsCatalogConfirmation(t *testing.T) {
 	for _, fixture := range []struct {

@@ -1,5 +1,7 @@
 import 'package:flutter/material.dart';
 
+import 'page_tab_swipe.dart';
+
 import 'app_layout.dart';
 import 'catalog_sort.dart';
 import 'core_bridge.dart';
@@ -33,6 +35,11 @@ class SavedLibrary extends StatefulWidget {
 }
 
 class _SavedLibraryState extends State<SavedLibrary> {
+  static final _filters = [
+    ('', '全部'),
+    for (final status in FollowStatus.values) (status.name, status.label),
+    ('updates', '有更新'),
+  ];
   final _search = TextEditingController();
   String _filter = '';
 
@@ -177,12 +184,7 @@ class _SavedLibraryState extends State<SavedLibrary> {
             padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
             child: Row(
               children: [
-                for (final filter in [
-                  ('', '全部'),
-                  for (final status in FollowStatus.values)
-                    (status.name, status.label),
-                  ('updates', '有更新'),
-                ])
+                for (final filter in _filters)
                   Padding(
                     padding: const EdgeInsets.only(right: 8),
                     child: ChoiceChip(
@@ -266,29 +268,41 @@ class _SavedLibraryState extends State<SavedLibrary> {
             );
           }
           final padding = constraints.maxWidth < 600 ? 16.0 : 24.0;
-          return CustomScrollView(
-            key: PageStorageKey(
-              'saved-${widget.history}-$_filter-${_search.text}',
-            ),
-            slivers: [
-              SliverToBoxAdapter(child: Column(children: header)),
-              if (items.isEmpty)
-                SliverFillRemaining(hasScrollBody: false, child: empty)
-              else
-                SliverPadding(
-                  padding: EdgeInsets.fromLTRB(padding, 0, padding, 20),
-                  sliver: SliverGrid(
-                    gridDelegate: dramaGridDelegate(
-                      context,
-                      constraints.maxWidth - 2 * padding,
-                    ),
-                    delegate: SliverChildBuilderDelegate(
-                      (_, index) => _tile(items[index]),
-                      childCount: items.length,
+          return PageTabSwipe(
+            onStep: widget.history
+                ? null
+                : (step) {
+                    final index =
+                        _filters.indexWhere((filter) => filter.$1 == _filter) +
+                        step;
+                    if (index >= 0 && index < _filters.length) {
+                      setState(() => _filter = _filters[index].$1);
+                    }
+                  },
+            child: CustomScrollView(
+              key: PageStorageKey(
+                'saved-${widget.history}-$_filter-${_search.text}',
+              ),
+              slivers: [
+                SliverToBoxAdapter(child: Column(children: header)),
+                if (items.isEmpty)
+                  SliverFillRemaining(hasScrollBody: false, child: empty)
+                else
+                  SliverPadding(
+                    padding: EdgeInsets.fromLTRB(padding, 0, padding, 20),
+                    sliver: SliverGrid(
+                      gridDelegate: dramaGridDelegate(
+                        context,
+                        constraints.maxWidth - 2 * padding,
+                      ),
+                      delegate: SliverChildBuilderDelegate(
+                        (_, index) => _tile(items[index]),
+                        childCount: items.length,
+                      ),
                     ),
                   ),
-                ),
-            ],
+              ],
+            ),
           );
         },
       );

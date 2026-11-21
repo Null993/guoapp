@@ -48,8 +48,10 @@ void main() {
         bool playing = true,
         bool foreground = true,
         int position = 5,
+        int buffer = 0,
       }) => health.stalled(
         position: Duration(seconds: position),
+        buffer: Duration(seconds: buffer),
         playing: playing,
         foreground: foreground,
         now: start.add(Duration(seconds: seconds)),
@@ -65,6 +67,10 @@ void main() {
       expect(stalled(101, position: 6), isFalse);
       health.reset();
       expect(stalled(200, position: 6), isFalse);
+      expect(stalled(219, position: 6, buffer: 8), isFalse);
+      expect(stalled(238, position: 6, buffer: 9), isFalse);
+      expect(stalled(257, position: 6, buffer: 8), isFalse);
+      expect(stalled(258, position: 6, buffer: 9), isTrue);
     },
   );
 }

@@ -2,7 +2,9 @@ package core
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"net/http"
 	"net/url"
 	"strconv"
 	"strings"
@@ -19,6 +21,12 @@ type providerMedia struct {
 	CENCKey     []byte
 	Quality     int
 	Variants    []providerMedia
+}
+
+func providerPlaylistNotFound(err error) bool {
+	var intercepted *proxyInterceptionError
+	return strings.HasSuffix(err.Error(), " HTTP 404") ||
+		errors.As(err, &intercepted) && intercepted.status == http.StatusNotFound
 }
 
 func (d *Downloader) providerBaseURL(source string) string {
@@ -62,7 +70,7 @@ func providerSourceForURL(raw string) string {
 		return sourceHuangguoAI
 	case huangguoVideoRouteHost(host):
 		return sourceHuangguoVideo
-	case host == "tideember.cc" || host == "xqjurgek.top":
+	case host == "lozmglzt.cc" || host == "tideember.cc" || host == "xqjurgek.top":
 		return sourceHuangdou
 	case host == "hongguoduanju.com" || host == "www.hongguoduanju.com":
 		return sourceHongguo
@@ -196,10 +204,34 @@ func (d *Downloader) resolveProviderMedia(ctx context.Context, task Task) (provi
 		}
 		if chapter.Source == sourceHuangguoAI {
 			media.URL = parseAIVideoURL(body, pageURL)
+			if media.URL == "" {
+				source, id, valid := splitProviderDramaID(task.DramaID)
+				sequence, err := strconv.Atoi(chapter.EpisodeString(task.Index))
+				if !valid || source != sourceHuangguoAI || err != nil || sequence < 1 {
+					return providerMedia{}, errors.New("黄果 AI 播放分集信息无效")
+				}
+				media, err = d.fetchHuangguoAIPlayback(ctx, id, sequence)
+				if err != nil {
+					return providerMedia{}, err
+				}
+			}
 		} else {
 			media.URL = parseDataHLS(body, pageURL)
 		}
 		media.Referer = pageURL
+	}
+	if chapter.Source == sourceHuangdou && len(media.Variants) > 0 {
+		options := append([]providerMedia{media}, media.Variants...)
+		for index, option := range options {
+			prepared, err := d.prepareWebProviderMedia(ctx, option, "黄豆")
+			if err == nil {
+				prepared.Variants = options[index+1:]
+				return prepared, nil
+			}
+			if ctx.Err() != nil || !providerPlaylistNotFound(err) || index == len(options)-1 {
+				return providerMedia{}, err
+			}
+		}
 	}
 	if !isProviderHTTPMediaURL(media.URL) {
 		return providerMedia{}, fmt.Errorf("%s 未返回有效播放地址，请刷新章节或确认站点访问权限", chapter.Source)

@@ -85,6 +85,10 @@ func (stream *nativeStreamServer) nativePrefetch(ctx context.Context, token, ent
 			if err != nil {
 				return false
 			}
+			if response.ContentLength > remaining {
+				response.Body.Close()
+				return false
+			}
 			body, readErr := io.ReadAll(io.LimitReader(response.Body, remaining+1))
 			response.Body.Close()
 			if readErr != nil || len(body) == 0 || int64(len(body)) > remaining ||

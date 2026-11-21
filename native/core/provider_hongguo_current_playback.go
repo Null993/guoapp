@@ -166,6 +166,10 @@ func (d *Downloader) hongguoCurrentPlayerPostAt(ctx context.Context, videoID, ba
 		return nil, d.catalogResponseError(request, response, content)
 	}
 	if len(content) == 0 {
+		if (base == hongguoAppBaseURL || base == hongguoAlternateAppBaseURL) && ctx.Err() == nil {
+			response.Body.Close()
+			return d.hongguoV5PlayerPost(ctx, videoID, identity)
+		}
 		return nil, errHongguoEmptyPlayback
 	}
 	if len(content) > providerMaxBodyBytes {

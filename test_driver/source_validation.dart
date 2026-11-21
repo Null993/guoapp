@@ -25,7 +25,7 @@ Future<void> main() async {
             !path.split('/').contains('..')) {
           final result = await Process.run('adb', [
             '-s',
-            'emulator-5554',
+            Platform.environment['SOURCE_VALIDATION_DEVICE'] ?? 'emulator-5554',
             'exec-out',
             'run-as',
             'com.duanju.duanju_app.debug',

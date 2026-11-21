@@ -174,6 +174,25 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 onTap: _chooseTheme,
               ),
               ListTile(
+                leading: const Icon(Icons.dashboard_customize_outlined),
+                title: const Text('首页布局'),
+                trailing: DropdownButton<String>(
+                  key: const ValueKey('home-layout-setting'),
+                  value: widget.store.homeLayout,
+                  items: const [
+                    DropdownMenuItem(value: 'classic', child: Text('经典')),
+                    DropdownMenuItem(value: 'cinema', child: Text('影院')),
+                  ],
+                  onChanged: (value) {
+                    if (value == null) return;
+                    saveUserChange(
+                      context,
+                      () => widget.store.setHomeLayout(value),
+                    );
+                  },
+                ),
+              ),
+              ListTile(
                 leading: const Icon(Icons.people_outline),
                 title: const Text('用户管理'),
                 subtitle: Text('当前：${widget.store.profile.name}'),

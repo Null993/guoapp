@@ -46,11 +46,16 @@ type Config struct {
 }
 
 type httpChain struct {
-	base      *http.Transport
-	cdn       *cdnTransport
-	resolver  *dnsResolver
-	browser   *sourceBrowserTransport
-	automatic *autoNetworkTransport
+	base         *http.Transport
+	cdn          *cdnTransport
+	resolver     *dnsResolver
+	browser      *sourceBrowserTransport
+	mediaNetwork idleClosingTransport
+}
+
+type idleClosingTransport interface {
+	http.RoundTripper
+	CloseIdleConnections()
 }
 
 type chainTransport struct {
@@ -62,12 +67,12 @@ func (transport *chainTransport) RoundTrip(request *http.Request) (*http.Respons
 	if chain == nil {
 		return nil, errors.New("站源网络客户端尚未初始化")
 	}
-	return chain.automatic.RoundTrip(request)
+	return chain.mediaNetwork.RoundTrip(request)
 }
 
 func (transport *chainTransport) CloseIdleConnections() {
 	if chain := transport.current.Load(); chain != nil {
-		chain.automatic.CloseIdleConnections()
+		chain.mediaNetwork.CloseIdleConnections()
 	}
 }
 
@@ -347,7 +352,8 @@ func (d *Downloader) newHTTPChain() *httpChain {
 	resolver := newDNSResolver(transport)
 	cdn := newCDNTransport(transport, resolver)
 	browser := newHuangguoBrowserTransport(cdn, d)
-	return &httpChain{base: transport, cdn: cdn, resolver: resolver, browser: browser, automatic: newAutoNetworkTransport(browser, d)}
+	automatic := newAutoNetworkTransport(browser, d)
+	return &httpChain{base: transport, cdn: cdn, resolver: resolver, browser: browser, mediaNetwork: newHanxiaoquanMediaNetwork(transport, d.proxyRouter, automatic)}
 }
 
 func (d *Downloader) currentDNSResolver() *dnsResolver {
@@ -385,7 +391,7 @@ func (d *Downloader) setInsecureTLS(insecure bool) {
 	previous := d.chain.current.Load()
 	d.chain.current.Store(d.newHTTPChain())
 	if previous != nil {
-		previous.automatic.CloseIdleConnections()
+		previous.mediaNetwork.CloseIdleConnections()
 	}
 }
 

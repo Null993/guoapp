@@ -111,12 +111,19 @@ jobs:
       - name: 校验 APK 签名证书
         if: steps.signing.outputs.release == 'true'
         shell: bash
+        env:
+          ANDROID_CERT_SHA256: ${{ vars.ANDROID_CERT_SHA256 }}
         run: |
           set -euo pipefail
-          expected='${{ vars.ANDROID_CERT_SHA256 }}'
+          expected=${ANDROID_CERT_SHA256//:/}
+          expected=${expected,,}
           if [ -z "$expected" ]; then
             echo "未设置仓库变量 ANDROID_CERT_SHA256，跳过证书指纹比对。" >&2
             exit 0
+          fi
+          if [[ ! "$expected" =~ ^[0-9a-f]{64}$ ]]; then
+            echo "ANDROID_CERT_SHA256 不是有效的 SHA-256 指纹。" >&2
+            exit 1
           fi
           apksigner=$(find "${ANDROID_HOME}/build-tools" -name apksigner -type f 2>/dev/null | sort | tail -n1 || true)
           if [ -z "$apksigner" ]; then
@@ -127,9 +134,13 @@ jobs:
           "$apksigner" --version || true
           for apk in dist/android/*.apk; do
             echo "== $(basename "$apk")"
-            output=$("$apksigner" verify --print-certs "$apk" 2>&1 || true)
+            if ! output=$("$apksigner" verify --print-certs "$apk" 2>&1); then
+              printf '%s\n' "$output" >&2
+              exit 1
+            fi
             printf '%s\n' "$output"
-            if ! printf '%s' "$output" | tr -d ':' | tr '[:upper:]' '[:lower:]' | grep -q "$expected"; then
+            actual=$(awk '/^(Signer #[0-9]+|V[1-4](\.[0-9]+)? Signer:) certificate SHA-256 digest: / {print tolower($NF)}' <<< "$output" | sort -u)
+            if [[ "$actual" != "$expected" ]]; then
               echo "签名证书与发布证书不一致，已终止。" >&2
               exit 1
             fi

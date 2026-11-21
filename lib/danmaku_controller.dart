@@ -19,6 +19,7 @@ class DanmakuController extends ChangeNotifier {
   int? _pendingStart;
   bool _closed = false;
   bool _enabled = true;
+  DanmakuFilter _filter = const DanmakuFilter();
   bool _available = false;
   bool _foreground = true;
   bool _playing = false;
@@ -88,6 +89,17 @@ class DanmakuController extends ChangeNotifier {
     _resetMotion();
     notifyListeners();
     _ensureWindow();
+  }
+
+  void setFilter(DanmakuFilter filter) {
+    if (_closed ||
+        (_filter.keywords == filter.keywords &&
+            _filter.hideDuplicates == filter.hideDuplicates)) {
+      return;
+    }
+    _filter = filter;
+    _rebuildItems();
+    notifyListeners();
   }
 
   void update({
@@ -280,7 +292,7 @@ class DanmakuController extends ChangeNotifier {
     }
     final sorted = unique.values.toList()
       ..sort((a, b) => a.timeMs.compareTo(b.timeMs));
-    items = List.unmodifiable(sorted);
+    items = List.unmodifiable(_filter.apply(sorted));
     dataRevision++;
   }
 

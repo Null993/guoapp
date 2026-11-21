@@ -6,11 +6,13 @@ class AppBottomNavigation extends StatelessWidget {
     required this.selectedIndex,
     required this.onDestinationSelected,
     required this.destinations,
+    this.cinema = false,
   });
 
   final int selectedIndex;
   final ValueChanged<int> onDestinationSelected;
   final List<NavigationDestination> destinations;
+  final bool cinema;
 
   @override
   Widget build(BuildContext context) {
@@ -22,9 +24,13 @@ class AppBottomNavigation extends StatelessWidget {
         top: false,
         child: DecoratedBox(
           decoration: BoxDecoration(
-            border: Border(
-              top: BorderSide(color: colors.outlineVariant, width: .5),
-            ),
+            color: cinema ? colors.surfaceContainerHigh : null,
+            borderRadius: cinema ? BorderRadius.circular(24) : null,
+            border: cinema
+                ? Border.all(color: colors.outlineVariant, width: .5)
+                : Border(
+                    top: BorderSide(color: colors.outlineVariant, width: .5),
+                  ),
           ),
           child: Row(
             children: [
@@ -106,6 +112,9 @@ class AppBottomNavigation extends StatelessWidget {
             ],
           ),
         ),
+        minimum: cinema
+            ? const EdgeInsets.fromLTRB(12, 0, 12, 8)
+            : EdgeInsets.zero,
       ),
     );
   }

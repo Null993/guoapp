@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -22,7 +23,7 @@ func updateFixtureRelease(tag, slug, platform string) appRelease {
 }
 
 func TestAppUpdateVersionAndPlatformSelection(t *testing.T) {
-	latest := updateFixtureRelease("app-v0.2.86-93", "zhenguojian", "windows-x64.zip")
+	latest := updateFixtureRelease(fmt.Sprintf("app-v%s-%d", nativeAppVersion, nativeAppBuild+1), "zhenguojian", "windows-x64.zip")
 	cases := []struct {
 		name     string
 		releases []appRelease
@@ -35,7 +36,7 @@ func TestAppUpdateVersionAndPlatformSelection(t *testing.T) {
 		{"different edition", []appRelease{latest}, "windows", nil, false, "no_asset"},
 		{"wrong platform", []appRelease{latest}, "android", []string{"arm64-v8a"}, true, "no_asset"},
 		{"local newer", []appRelease{updateFixtureRelease("app-v0.2.68-75", "zhenguojian", "arm64-v8a.apk")}, "windows", nil, true, "local_newer"},
-		{"equal", []appRelease{updateFixtureRelease("v0.2.85+92", "zhenguojian", "windows-x64.zip")}, "windows", nil, true, "current"},
+		{"equal", []appRelease{updateFixtureRelease(fmt.Sprintf("v%s+%d", nativeAppVersion, nativeAppBuild), "zhenguojian", "windows-x64.zip")}, "windows", nil, true, "current"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -45,8 +46,9 @@ func TestAppUpdateVersionAndPlatformSelection(t *testing.T) {
 			}
 		})
 	}
-	android := updateFixtureRelease("0.2.86+93", "zhenguojian", "armeabi-v7a.apk")
-	arm64 := updateFixtureRelease("0.2.86+93", "zhenguojian", "arm64-v8a.apk")
+	newAndroidTag := fmt.Sprintf("%s+%d", nativeAppVersion, nativeAppBuild+1)
+	android := updateFixtureRelease(newAndroidTag, "zhenguojian", "armeabi-v7a.apk")
+	arm64 := updateFixtureRelease(newAndroidTag, "zhenguojian", "arm64-v8a.apk")
 	android.Assets = append(android.Assets, arm64.Assets...)
 	result, err := selectAppRelease([]appRelease{android}, "android", []string{"arm64-v8a", "armeabi-v7a"}, true)
 	if err != nil || result.Asset == nil || !strings.HasSuffix(result.Asset.Name, "arm64-v8a.apk") {

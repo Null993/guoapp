@@ -2,6 +2,56 @@ const danmakuWindowMs = 30000;
 const danmakuLifetimeMs = 8000;
 const danmakuMaxDurationMs = 86400000;
 
+class DanmakuFilter {
+  const DanmakuFilter({this.keywords = '', this.hideDuplicates = false});
+
+  static const maxKeywordLength = 1000;
+  final String keywords;
+  final bool hideDuplicates;
+
+  factory DanmakuFilter.fromJson(Object? value) {
+    if (value is! Map) return const DanmakuFilter();
+    final words = value['keywords'];
+    return DanmakuFilter(
+      keywords: words is String && words.length <= maxKeywordLength * 8
+          ? words
+          : '',
+      hideDuplicates: value['hideDuplicates'] == true,
+    );
+  }
+
+  Map<String, Object> toJson() => {
+    'keywords': keywords,
+    'hideDuplicates': hideDuplicates,
+  };
+
+  Iterable<DanmakuItem> apply(Iterable<DanmakuItem> items) sync* {
+    final blocked = keywords
+        .toLowerCase()
+        .split('\n')
+        .map((word) => word.trim())
+        .where((word) => word.isNotEmpty)
+        .toSet();
+    if (blocked.isEmpty && !hideDuplicates) {
+      yield* items;
+      return;
+    }
+    final lastShown = <String, int>{};
+    for (final item in items) {
+      final message = item.text.toLowerCase().trim();
+      if (blocked.any(message.contains)) continue;
+      if (hideDuplicates) {
+        final previous = lastShown[message];
+        if (previous != null && item.timeMs - previous < danmakuLifetimeMs) {
+          continue;
+        }
+        lastShown[message] = item.timeMs;
+      }
+      yield item;
+    }
+  }
+}
+
 class DanmakuItem {
   const DanmakuItem({
     required this.id,

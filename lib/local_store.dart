@@ -468,6 +468,8 @@ class LocalStore extends ChangeNotifier {
     return {'light', 'dark', 'system'}.contains(value) ? value! : 'system';
   }
 
+  String get homeLayout => catalogView.homeLayout;
+
   bool get autoExport => !locked && (_bool('autoExport') ?? false);
   bool get exportPosters => !locked && (_bool('exportPosters') ?? false);
   bool get allowInsecureTLS => !locked && (_bool('allowInsecureTLS') ?? false);
@@ -643,6 +645,10 @@ class LocalStore extends ChangeNotifier {
   Future<void> setThemeMode(String value) =>
       {'light', 'dark', 'system'}.contains(value)
       ? _setting('themeMode', value)
+      : Future.value();
+  Future<void> setHomeLayout(String value) =>
+      {'classic', 'cinema'}.contains(value)
+      ? setCatalogView(catalogView.copyWith(homeLayout: value))
       : Future.value();
   Future<void> setPlaybackPreferences(PlaybackPreferences value) {
     PlaybackPreferences.fromJson(value.toJson());

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"strings"
@@ -121,83 +122,125 @@ func (engine *nativeEngine) checkSource(ctx context.Context, source string, sele
 	}) || !playback {
 		return failure
 	}
-	drama := selected
-	if drama.ID == "" {
-		drama = page.Items[0]
-		for _, item := range page.Items {
-			if item.VIP == nil || !*item.VIP {
-				drama = item
-				break
+	checkPlayback := func(drama nativeDrama) error {
+		report.Sample = drama.Title
+		var chapter Chapter
+		if !run("分集目录", func() (string, error) {
+			_, id, _ := splitProviderDramaID(drama.ID)
+			_, chapters, err := engine.downloader.GetHuangguoChapters(ctx, source, id)
+			if err != nil {
+				return "", err
 			}
-		}
-	}
-	report.Sample = drama.Title
-	var chapter Chapter
-	if !run("分集目录", func() (string, error) {
-		_, id, _ := splitProviderDramaID(drama.ID)
-		_, chapters, err := engine.downloader.GetHuangguoChapters(ctx, source, id)
-		if err != nil {
-			return "", err
-		}
-		for _, item := range chapters {
-			if !item.VIP {
-				chapter = item
-				return fmt.Sprintf("%d 集，检测第 %s 集", len(chapters), item.EpisodeString(1)), nil
+			for _, item := range chapters {
+				if !item.VIP {
+					chapter = item
+					return fmt.Sprintf("%d 集，检测第 %s 集", len(chapters), item.EpisodeString(1)), nil
+				}
 			}
+			if len(chapters) == 0 {
+				return "", errors.New("没有可用于检测的分集")
+			}
+			chapter = chapters[0]
+			return fmt.Sprintf("%d 集，检测第 %s 集的站点实际授权", len(chapters), chapter.EpisodeString(1)), nil
+		}) {
+			return failure
 		}
-		if len(chapters) == 0 {
-			return "", errors.New("没有可用于检测的分集")
+		var media providerMedia
+		var keyURL, segmentURL string
+		var probeContext context.Context
+		if !run("播放地址与播放列表", func() (string, error) {
+			var err error
+			media, err = engine.downloader.resolveProviderMedia(ctx, Task{DramaID: drama.ID, Chapter: chapter, Index: 1})
+			if err != nil {
+				return "", err
+			}
+			probeContext = providerMediaContext(ctx, media.credentials)
+			keyURL, segmentURL, err = engine.downloader.sourceProbeResources(probeContext, media)
+			return "已取得可识别的播放地址", err
+		}) {
+			return failure
 		}
-		chapter = chapters[0]
-		return fmt.Sprintf("%d 集，检测第 %s 集的站点实际授权", len(chapters), chapter.EpisodeString(1)), nil
-	}) {
+		if !run("播放密钥", func() (string, error) {
+			if len(media.CENCKey) == 16 || len(media.HLSKey) == 16 {
+				return "密钥长度有效", nil
+			}
+			if keyURL == "" {
+				return "当前媒体无需额外密钥", nil
+			}
+			if strings.HasPrefix(keyURL, "data:") {
+				_, encoded, found := strings.Cut(keyURL, ",")
+				decoded, err := base64.StdEncoding.DecodeString(encoded)
+				if !found || err != nil || len(decoded) != 16 {
+					return "", errors.New("内嵌密钥格式无效")
+				}
+				return "内嵌密钥有效", nil
+			}
+			body, err := engine.downloader.sourceProbeBytes(probeContext, keyURL, media.Referer, true)
+			if err == nil && len(body) != 16 {
+				err = errors.New("返回的播放密钥不是 16 字节")
+			}
+			return "密钥可达且长度有效", err
+		}) {
+			return failure
+		}
+		run("媒体连接", func() (string, error) {
+			body, err := engine.downloader.sourceProbeBytes(probeContext, segmentURL, media.Referer, false)
+			if err == nil && len(body) == 0 {
+				err = errors.New("媒体服务器返回空内容")
+			}
+			return "已读取媒体开头；实际播放效果请在播放器确认", err
+		})
+		engine.changeSourceRecord(source, func(record *nativeSourceRecord) { record.Completed = len(report.Steps) })
 		return failure
 	}
-	var media providerMedia
-	var keyURL, segmentURL string
-	if !run("播放地址与播放列表", func() (string, error) {
-		var err error
-		media, err = engine.downloader.resolveProviderMedia(ctx, Task{DramaID: drama.ID, Chapter: chapter, Index: 1})
-		if err != nil {
-			return "", err
-		}
-		ctx = providerMediaContext(ctx, media.credentials)
-		keyURL, segmentURL, err = engine.downloader.sourceProbeResources(ctx, media)
-		return "已取得可识别的播放地址", err
-	}) {
-		return failure
+	if selected.ID != "" {
+		return checkPlayback(selected)
 	}
-	if !run("播放密钥", func() (string, error) {
-		if len(media.CENCKey) == 16 || len(media.HLSKey) == 16 {
-			return "密钥长度有效", nil
+	var candidates []nativeDrama
+	for _, drama := range page.Items {
+		if drama.VIP == nil || !*drama.VIP {
+			candidates = append(candidates, drama)
 		}
-		if keyURL == "" {
-			return "当前媒体无需额外密钥", nil
-		}
-		if strings.HasPrefix(keyURL, "data:") {
-			_, encoded, found := strings.Cut(keyURL, ",")
-			decoded, err := base64.StdEncoding.DecodeString(encoded)
-			if !found || err != nil || len(decoded) != 16 {
-				return "", errors.New("内嵌密钥格式无效")
-			}
-			return "内嵌密钥有效", nil
-		}
-		body, err := engine.downloader.sourceProbeBytes(ctx, keyURL, media.Referer, true)
-		if err == nil && len(body) != 16 {
-			err = errors.New("返回的播放密钥不是 16 字节")
-		}
-		return "密钥可达且长度有效", err
-	}) {
-		return failure
 	}
-	run("媒体连接", func() (string, error) {
-		body, err := engine.downloader.sourceProbeBytes(ctx, segmentURL, media.Referer, false)
-		if err == nil && len(body) == 0 {
-			err = errors.New("媒体服务器返回空内容")
+	if len(candidates) == 0 {
+		candidates = page.Items[:1]
+	}
+	limit := 1
+	switch source {
+	case sourceGuipian:
+		candidates = candidates[:min(24, len(candidates))]
+		limit = min(6, len(candidates))
+	case sourceHanxiaoquan:
+		candidates = candidates[:min(36, len(candidates))]
+		limit = min(6, len(candidates))
+	case sourceHongguo:
+		candidates = candidates[:min(24, len(candidates))]
+		limit = min(3, len(candidates))
+	}
+	for index := range limit {
+		drama := candidates[index*len(candidates)/limit]
+		report.Steps = report.Steps[:1]
+		failure = nil
+		err := checkPlayback(drama)
+		if err == nil || index == limit-1 || ctx.Err() != nil {
+			return err
 		}
-		return "已读取媒体开头；实际播放效果请在播放器确认", err
-	})
-	engine.changeSourceRecord(source, func(record *nativeSourceRecord) { record.Completed = len(report.Steps) })
+		if len(report.Steps) < 3 {
+			return err
+		}
+		last := report.Steps[len(report.Steps)-1]
+		var backoff *requestBackoff
+		var network net.Error
+		mediaDenied := last.HTTPStatus == http.StatusForbidden && last.Host != "" &&
+			providerSourceForURL("https://"+last.Host) != source &&
+			(!errors.As(err, &backoff) || !backoff.verify)
+		timedOut := errors.As(err, &network) && network.Timeout() && !sourceTerminalError(err)
+		hongguoEmpty := source == sourceHongguo && strings.Contains(err.Error(), errHongguoEmptyPlayback.Error())
+		if !mediaDenied && !providerPlaylistNotFound(err) && !timedOut && !hongguoEmpty {
+			return err
+		}
+		report.Steps[0].Message += fmt.Sprintf("；抽查《%s》失败：%s", truncate(drama.Title, 40), truncate(last.Message, 150))
+	}
 	return failure
 }
 

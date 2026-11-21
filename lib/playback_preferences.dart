@@ -1,3 +1,4 @@
+import 'danmaku_models.dart';
 import 'video_enhancement_preferences.dart';
 
 const playbackSpeeds = [.5, .75, 1.0, 1.25, 1.5, 2.0, 3.0];
@@ -28,6 +29,7 @@ class PlaybackPreferences {
     this.quality = 0,
     this.autoAdvance = true,
     this.danmaku = true,
+    this.danmakuFilter = const DanmakuFilter(),
     this.preload = true,
     this.enhancement = const VideoEnhancementPreferences(),
     this.fitType = 'contain',
@@ -45,6 +47,7 @@ class PlaybackPreferences {
   final int quality;
   final bool autoAdvance;
   final bool danmaku;
+  final DanmakuFilter danmakuFilter;
   final bool preload;
   final VideoEnhancementPreferences enhancement;
 
@@ -71,6 +74,7 @@ class PlaybackPreferences {
     int? quality,
     bool? autoAdvance,
     bool? danmaku,
+    DanmakuFilter? danmakuFilter,
     bool? preload,
     VideoEnhancementPreferences? enhancement,
     String? fitType,
@@ -87,6 +91,7 @@ class PlaybackPreferences {
     quality: quality ?? this.quality,
     autoAdvance: autoAdvance ?? this.autoAdvance,
     danmaku: danmaku ?? this.danmaku,
+    danmakuFilter: danmakuFilter ?? this.danmakuFilter,
     preload: preload ?? this.preload,
     enhancement: enhancement ?? this.enhancement,
     fitType: fitType ?? this.fitType,
@@ -105,6 +110,7 @@ class PlaybackPreferences {
     'quality': quality,
     'autoAdvance': autoAdvance,
     'danmaku': danmaku,
+    'danmakuFilter': danmakuFilter.toJson(),
     'preload': preload,
     'enhancement': enhancement.toJson(),
     'fitType': fitType,
@@ -153,6 +159,7 @@ class PlaybackPreferences {
       quality: quality,
       autoAdvance: autoAdvance,
       danmaku: danmaku,
+      danmakuFilter: DanmakuFilter.fromJson(value['danmakuFilter']),
       preload: preload,
       enhancement: VideoEnhancementPreferences.fromJson(value['enhancement']),
       fitType: fitType,

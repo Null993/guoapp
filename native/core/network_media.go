@@ -21,6 +21,8 @@ type huangguoPreviewSession struct {
 	pending chan struct{}
 }
 
+type hanxiaoquanMediaNetworkKey struct{}
+
 func mediaRequestHeaders(request *http.Request, referer string) {
 	request.Header.Set("User-Agent", userAgent)
 	request.Header.Set("Referer", referer)
@@ -161,6 +163,9 @@ func (d *Downloader) doMediaRequestWithClient(request *http.Request, client *htt
 }
 
 func (d *Downloader) doMediaRequestAttempt(request *http.Request, client *http.Client) (*http.Response, error) {
+	if request.Header.Get("Referer") == hanxiaoquanSiteBaseURL+"/" {
+		request = request.WithContext(context.WithValue(request.Context(), hanxiaoquanMediaNetworkKey{}, true))
+	}
 	mediaRequestHeaders(request, request.Header.Get("Referer"))
 	d.applySourceRequestAccess(request)
 	if credentials, _ := request.Context().Value(providerMediaCredentialsKey{}).(*providerMediaCredentials); credentials != nil {

@@ -113,3 +113,95 @@ func TestHongguoCurrentPlaybackStopsOnRegistrationDenial(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestHongguoCurrentPlaybackUsesV5OnlyAfterEmptyReply(t *testing.T) {
+	for _, status := range []int{200, 403, 429} {
+		requests := 0
+		d := sourceFixtureDownloader(t, func(request *http.Request) (*http.Response, error) {
+			requests++
+			switch request.URL.Host {
+			case "log5-applog-lf.fqnovel.com":
+				return sourceFixtureResponse(request, 200, hongguoRegistrationFixture), nil
+			case "api5-normal-sinfonlineb.fqnovel.com":
+				return sourceFixtureResponse(request, status, ""), nil
+			case "api5-normal-sinfonlinea.fqnovel.com":
+				if request.Header.Get("Content-Encoding") != "gzip" || request.Header.Get("X-Helios") == "" || request.Header.Get("X-Medusa") == "" {
+					t.Fatal("incomplete V5 request")
+				}
+				body, err := gzip.NewReader(request.Body)
+				if err != nil {
+					t.Fatal(err)
+				}
+				defer body.Close()
+				var payload map[string]any
+				if err := json.NewDecoder(body).Decode(&payload); err != nil {
+					t.Fatal(err)
+				}
+				ids := anyList(nestedMap(payload, "mixed_video_id_map")["1004"])
+				if len(ids) != 1 || ids[0] != "80001" {
+					t.Fatalf("unexpected episode: %v", ids)
+				}
+				return sourceFixtureResponse(request, 200, `{"code":0,"data":{"80001":{"video_model":{"video_list":[]}}}}`), nil
+			default:
+				t.Fatalf("unexpected host: %s", request.URL.Host)
+				return nil, nil
+			}
+		})
+		entry, err := d.hongguoCurrentPlayerPostAt(context.Background(), "80001", hongguoAppBaseURL)
+		if status == 200 && (err != nil || entry["video_model"] == nil || requests != 3) {
+			t.Fatalf("V5 advance failed: entry=%v err=%v requests=%d", entry, err, requests)
+		}
+		if status != 200 && (err == nil || requests != 2) {
+			t.Fatalf("unexpected request after denial: status=%d err=%v requests=%d", status, err, requests)
+		}
+	}
+}
+
+func TestHongguoV5PlaybackUsesTabForTheSameEpisodeAndIdentity(t *testing.T) {
+	const videoID = "80001"
+	identity := hongguoRegistration{Version: 1, DeviceID: "9123456789012345678", InstallID: "9234567890123456789"}
+	for _, test := range []struct {
+		name       string
+		postStatus int
+		postBody   string
+		tabBody    string
+		wantError  bool
+	}{
+		{"tab response", 200, "", `{"code":0,"data":{"video_model_data":{"80001":{"video_model":{}}}}}`, false},
+		{"wrong episode", 200, "", `{"code":0,"data":{"video_model_data":{"80002":{"video_model":{}}}}}`, true},
+		{"no permission", 200, "", `{"code":403,"data":{"80001":{"video_model":{}}}}`, true},
+		{"post forbidden", 403, "", "", true},
+		{"post throttled", 429, "", "", true},
+		{"post success", 200, `{"code":0,"data":{"80001":{"video_model":{}}}}`, "", false},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			var cdid string
+			tabRequests := 0
+			d := sourceFixtureDownloader(t, func(request *http.Request) (*http.Response, error) {
+				query := request.URL.Query()
+				if request.Method == http.MethodPost {
+					cdid = query.Get("cdid")
+					return sourceFixtureResponse(request, test.postStatus, test.postBody), nil
+				}
+				tabRequests++
+				if request.Method != http.MethodGet || request.URL.Path != "/reading/bookapi/video_tab/multi_video_model/v1/" ||
+					query.Get("video_id") != videoID || query.Get("device_id") != identity.DeviceID ||
+					query.Get("iid") != identity.InstallID || cdid == "" || query.Get("cdid") != cdid || request.ContentLength != 0 {
+					t.Error("tab fallback changed the episode or registered identity")
+				}
+				if request.Header.Get("X-SS-Req-Ticket") != query.Get("_rticket") || request.Header.Get("X-Medusa") == "" ||
+					request.Header.Get("X-SS-Stub") != "" || request.Header.Get("Content-Type") != "" || request.Header.Get("Content-Encoding") != "" {
+					t.Error("tab fallback did not use bodyless request headers")
+				}
+				return sourceFixtureResponse(request, 200, test.tabBody), nil
+			})
+			entry, err := d.hongguoV5PlayerPost(context.Background(), videoID, identity)
+			if (err != nil) != test.wantError || (!test.wantError && entry["video_model"] == nil) {
+				t.Fatalf("entry=%v err=%v", entry, err)
+			}
+			if wantTab := test.tabBody != ""; (tabRequests == 1) != wantTab || tabRequests > 1 {
+				t.Fatalf("unexpected tab requests: %d", tabRequests)
+			}
+		})
+	}
+}

@@ -22,7 +22,8 @@ import (
 )
 
 const (
-	huangdouBaseURL     = "https://tideember.cc"
+	huangdouBaseURL     = "https://lozmglzt.cc"
+	huangdouFallbackURL = "https://tideember.cc"
 	huangdouVersion     = "2.0.0"
 	huangdouDeviceType  = "web"
 	huangdouPlatformKey = "7961beb44246e3012ce228d6b5ced05a"
@@ -115,6 +116,18 @@ func (d *Downloader) resolveHuangdouPlayback(ctx context.Context, client *huangd
 	if duration, err := strconv.ParseFloat(mapString(data, "duration"), 64); err == nil && duration > 0 {
 		result.Duration = time.Duration(duration * float64(time.Second))
 	}
+	seen := map[string]bool{result.URL: true}
+	for _, line := range huangdouList(data["lines"]) {
+		address := resolveProviderURL(client.host+"/", mapString(line, "url", "m3u8", "play_url"))
+		if !isProviderHTTPMediaURL(address) || seen[address] || huangdouPreviewOnly(line, address, client.host) || huangdouPreviewOnly(data, address, client.host) {
+			continue
+		}
+		seen[address] = true
+		variant := result
+		variant.URL = address
+		variant.Variants = nil
+		result.Variants = append(result.Variants, variant)
+	}
 	return result, nil
 }
 
@@ -144,7 +157,7 @@ func (c *huangdouAPIClient) call(ctx context.Context, path string, data map[stri
 			return lastErr
 		}
 		if c.host == huangdouBaseURL && c.d.cfg.HuangdouURL == "" {
-			c.host = "https://xqjurgek.top"
+			c.host = huangdouFallbackURL
 		}
 	}
 	return lastErr

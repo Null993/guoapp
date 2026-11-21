@@ -17,25 +17,30 @@ class CatalogView {
     this.sort = CatalogSort.source,
     this.release = '',
     this.allSources = false,
+    this.homeLayout = 'classic',
   });
   final CatalogSort sort;
   final String release;
   final bool allSources;
+  final String homeLayout;
 
   CatalogView copyWith({
     CatalogSort? sort,
     String? release,
     bool? allSources,
+    String? homeLayout,
   }) => CatalogView(
     sort: sort ?? this.sort,
     release: release ?? this.release,
     allSources: allSources ?? this.allSources,
+    homeLayout: homeLayout ?? this.homeLayout,
   );
 
   Map<String, dynamic> toJson() => {
     'sort': sort.name,
     'release': release,
     'allSources': allSources,
+    if (homeLayout == 'cinema') 'homeLayout': homeLayout,
   };
 
   factory CatalogView.fromJson(Map<String, dynamic> value) => CatalogView(
@@ -48,6 +53,7 @@ class CatalogView {
         ? value['release'] as String
         : '',
     allSources: value['allSources'] == true,
+    homeLayout: value['homeLayout'] == 'cinema' ? 'cinema' : 'classic',
   );
 }
 

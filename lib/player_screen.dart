@@ -151,6 +151,7 @@ class _PlayerScreenState extends State<PlayerScreen>
     quality: _requestedQuality,
     autoAdvance: _autoAdvance,
     danmaku: _danmakuEnabled,
+    danmakuFilter: widget.store.playbackPreferences.danmakuFilter,
     preload: _preloadEnabled,
     enhancement: _enhancement.preferences,
     fitType: _fitType,
@@ -198,7 +199,8 @@ class _PlayerScreenState extends State<PlayerScreen>
     _loader = PlaybackLoader(widget.repository);
     _preloader = PlaybackPreloader(widget.repository);
     _danmaku = DanmakuController(widget.repository)
-      ..setEnabled(_danmakuEnabled);
+      ..setEnabled(_danmakuEnabled)
+      ..setFilter(preferences.danmakuFilter);
     widget.store.addListener(_accessChanged);
     _player =
         widget.playerFactory?.call() ??
@@ -346,6 +348,7 @@ class _PlayerScreenState extends State<PlayerScreen>
           _error == null &&
           _health.stalled(
             position: _player.state.position,
+            buffer: _player.state.buffer,
             playing: _player.state.playing && _playIntent,
             foreground: _foreground,
             now: DateTime.now(),
@@ -1328,6 +1331,7 @@ class _PlayerScreenState extends State<PlayerScreen>
       _preloadEnabled = true;
     });
     _danmaku.setEnabled(_danmakuEnabled);
+    _danmaku.setFilter(nextPreferences.danmakuFilter);
     _syncDanmaku();
     if (qualityChanged) _preloader.clear();
     _syncPreload();

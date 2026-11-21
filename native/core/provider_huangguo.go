@@ -41,8 +41,8 @@ var (
 	huangguoAIBaseMirrors = []string{"https://huangguoai.com", "https://ttvoij.ediayikma.cc", "https://thu.ediayikma.cc", "https://pku.ediayikma.cc", "https://fdu.ediayikma.cc", "https://thu.agdkczeyx.cc"}
 	huangguoVideoBaseURL  = "https://huangguo.video"
 
-	huangguoAISlugs     = []string{"recommend", "newest", "ai-duanju", "ai-manju", "ai-huanlian", "ai-mogai", "ranks/hot"}
-	huangguoAITypeNames = map[string]string{"recommend": "精选推荐", "newest": "最近上新", "ai-duanju": "AI成人短剧", "ai-manju": "AI成人漫剧", "ai-huanlian": "AI换脸", "ai-mogai": "AI魔改", "ranks/hot": "排行榜"}
+	huangguoAISlugs     = []string{"recommend", "newest", "ai-duanju", "ai-manju", "original", "ranks/hot"}
+	huangguoAITypeNames = map[string]string{"recommend": "精选推荐", "newest": "最近上新", "ai-duanju": "AI成人短剧", "ai-manju": "AI成人漫剧", "original": "黄果原创", "ranks/hot": "排行榜"}
 
 	reDetailHref      = regexp.MustCompile(`(?is)<a\b[^>]*href=["']([^"']*/detail/([^"'/?#]+)[^"']*)["'][^>]*>.*?</a>`)
 	reDramaCardStart  = regexp.MustCompile(`(?is)<div\b[^>]*class=["'][^"']*\bhg-drama-card\b[^"']*["'][^>]*>`)
@@ -109,7 +109,7 @@ func canonicalProviderSource(source string) string {
 		return sourceHuangguoAI
 	case "huangguo-video", "huangguo.video", "huangguoai.fit":
 		return sourceHuangguoVideo
-	case "huangdou", "tideember.cc", "xqjurgek.top":
+	case "huangdou", "lozmglzt.cc", "tideember.cc", "xqjurgek.top":
 		return sourceHuangdou
 	case "hongguo", "hongguoduanju.com":
 		return sourceHongguo
@@ -255,6 +255,61 @@ func (d *Downloader) GetHuangguoChapters(ctx context.Context, source, sourceID s
 func (d *Downloader) fetchHuangguoAIChapters(ctx context.Context, sourceID string) (string, []Chapter, error) {
 	drama, chapters, err := d.fetchHuangguoAIDetail(ctx, sourceID)
 	return drama.DisplayTitle(), chapters, err
+}
+
+func (d *Downloader) fetchHuangguoAIPlayback(ctx context.Context, sourceID string, sequence int) (providerMedia, error) {
+	base := d.providerBaseURL(sourceHuangguoAI)
+	address := fmt.Sprintf("%s/api/videos/%s/episodes/%d/playback", base, url.PathEscape(sourceID), sequence)
+	ctx = context.WithValue(ctx, automaticReadOnlyKey{}, true)
+	request, err := http.NewRequestWithContext(ctx, http.MethodPost, address, strings.NewReader("{}"))
+	if err != nil {
+		return providerMedia{}, err
+	}
+	request.Header.Set("User-Agent", userAgent)
+	request.Header.Set("Content-Type", "application/json")
+	request.Header.Set("Accept", "application/json")
+	request.Header.Set("Origin", base)
+	request.Header.Set("Referer", base+"/")
+	response, err := d.doCatalogRequestWithTimeout(request, providerTimeout)
+	if err != nil {
+		return providerMedia{}, err
+	}
+	defer response.Body.Close()
+	const limit = 64 << 10
+	body, err := io.ReadAll(io.LimitReader(response.Body, limit+1))
+	if err != nil {
+		return providerMedia{}, err
+	}
+	if response.StatusCode != http.StatusOK || catalogResponseBlockReason(response, body) != "" {
+		return providerMedia{}, d.catalogResponseError(request, response, body)
+	}
+	var result struct {
+		Status int `json:"status"`
+		Data   struct {
+			ID      string            `json:"id"`
+			Episode int               `json:"ep"`
+			Streams map[string]string `json:"streams"`
+		} `json:"data"`
+	}
+	if len(body) > limit || json.Unmarshal(body, &result) != nil {
+		return providerMedia{}, errors.New("黄果 AI 播放响应格式无效")
+	}
+	if result.Status != 1 || result.Data.ID != sourceID || result.Data.Episode != sequence {
+		return providerMedia{}, errors.New("黄果 AI 未提供所选分集的播放地址，请确认站点访问权限")
+	}
+	main := result.Data.Streams["main"]
+	hevc := result.Data.Streams["hevc"]
+	if !isProviderHTTPMediaURL(main) {
+		main, hevc = hevc, ""
+	}
+	if !isProviderHTTPMediaURL(main) {
+		return providerMedia{}, errors.New("黄果 AI 未提供所选分集的正片线路，请确认站点访问权限")
+	}
+	media := providerMedia{URL: main, Referer: base + "/"}
+	if isProviderHTTPMediaURL(hevc) && hevc != main {
+		media.Variants = []providerMedia{{URL: hevc, Referer: media.Referer}}
+	}
+	return media, nil
 }
 
 func (d *Downloader) fetchHuangguoAIDetail(ctx context.Context, sourceID string) (Drama, []Chapter, error) {

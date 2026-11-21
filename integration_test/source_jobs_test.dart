@@ -1,5 +1,6 @@
 import 'dart:convert';
 import 'dart:io';
+import 'dart:math';
 
 import 'package:crypto/crypto.dart';
 import 'package:duanju_app/app_layout.dart';
@@ -21,7 +22,7 @@ import 'package:path_provider_platform_interface/path_provider_platform_interfac
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:window_manager/window_manager.dart';
 
-import 'source_playback_test.dart' show ValidationPaths;
+import 'source_playback_test.dart' show ValidationPaths, safeError;
 
 Map<String, dynamic> jobStatus(SourceStatus value) => {
   'stage': value.stage,
@@ -292,27 +293,49 @@ void main() {
             const bool.fromEnvironment('WAIT_SOURCE_LOGIN')) {
           final plays = <Map<String, dynamic>>[];
           row['playback'] = plays;
-          for (final id in ['4737', '4763', '4787']) {
-            final detail = await repository.detail(
-              Drama.fromJson({
-                'id': 'sorani:$id',
-                'source': 'sorani',
-                'title': '青空验收',
-              }),
-            );
+          const seed = int.fromEnvironment(
+            'SOURCE_RANDOM_SEED',
+            defaultValue: 20261119,
+          );
+          row['randomSeed'] = seed;
+          final random = Random(seed);
+          final catalog = await repository.catalog(source.id, force: true);
+          final candidates = {
+            for (final drama in catalog.items)
+              if (drama.id.isNotEmpty && drama.source == source.id)
+                drama.id: drama,
+          }.values.toList()..shuffle(random);
+          for (final candidate in candidates.take(10)) {
+            if (plays.where((entry) => entry['success'] == true).length >= 3) {
+              break;
+            }
             final attempt = <String, dynamic>{
-              'id': detail.drama.id,
-              'title': detail.drama.title,
-              'episode': 1,
+              'id': candidate.id,
+              'title': candidate.title,
               'success': false,
             };
             plays.add(attempt);
+            late final DramaDetail detail;
+            try {
+              detail = await repository.detail(candidate);
+              if (detail.episodes.isEmpty) throw StateError('未返回分集');
+            } catch (error) {
+              attempt['error'] = safeError(error);
+              await save();
+              continue;
+            }
+            final index = random.nextInt(detail.episodes.length);
+            attempt.addAll({
+              'title': detail.drama.title,
+              'episode': detail.episodes[index].number,
+              'episodeId': detail.episodes[index].id,
+            });
             await tester.pumpWidget(
               MaterialApp(
                 home: PlayerScreen(
-                  key: ValueKey(id),
+                  key: ValueKey(candidate.id),
                   detail: detail,
-                  initialIndex: 0,
+                  initialIndex: index,
                   repository: repository,
                   store: store,
                 ),
@@ -353,6 +376,7 @@ void main() {
                 break;
               }
             }
+            if (attempt['success'] != true) attempt['error'] = '首帧或播放推进超时';
             await save();
             await tester.pumpWidget(const SizedBox.shrink());
             await tester.pump(const Duration(seconds: 1));

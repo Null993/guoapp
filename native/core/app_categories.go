@@ -20,9 +20,11 @@ type nativeCategory struct {
 var nativeAICategories = []nativeCategory{
 	{ID: "ai-duanju", Name: "AI 短剧"},
 	{ID: "ai-manju", Name: "AI 漫剧"},
-	{ID: "ai-huanlian", Name: "AI 换脸"},
-	{ID: "ai-mogai", Name: "AI 魔改"},
 }
+
+var nativeAIOriginalCategory = nativeCategory{ID: "original", Name: "黄果原创"}
+
+var huangguoOriginalNextPage = regexp.MustCompile(`(?i)<link\b[^>]*\brel=['"]next['"][^>]*>`)
 
 func nativeAIPrimaryCategoryID() string {
 	if len(nativeAICategories) == 0 {
@@ -70,6 +72,9 @@ func validNativeCategory(source, category string) bool {
 			}
 		}
 	case sourceHuangguoAI:
+		if category == nativeAIOriginalCategory.ID {
+			return true
+		}
 		for _, entry := range nativeAICategories {
 			if category == entry.ID {
 				return true
@@ -106,7 +111,7 @@ func (engine *nativeEngine) nativeCategories(ctx context.Context, source string,
 		}
 		return all, nil
 	case sourceHuangguoAI:
-		return append(all, nativeAICategories...), nil
+		return append(append(all, nativeAICategories...), nativeAIOriginalCategory), nil
 	case sourceHuangdou:
 		return all, nil
 	}
@@ -201,6 +206,22 @@ func parseHuangguoVideoCategories(body string) []nativeCategory {
 }
 
 func (d *Downloader) fetchHuangguoAICatalogPage(ctx context.Context, page int, category string) ([]Drama, bool, error) {
+	if category == nativeAIOriginalCategory.ID {
+		base := d.providerBaseURL(sourceHuangguoAI)
+		address := base + "/original/"
+		if page > 1 {
+			address += strconv.Itoa(page) + "/"
+		}
+		body, err := d.fetchProviderText(ctx, address, base+"/")
+		if err != nil {
+			return nil, false, err
+		}
+		items := parseHuangguoAIDramaCards(body, address, nativeAIOriginalCategory.Name)
+		if len(items) == 0 {
+			return nil, false, errors.New("黄果原创未返回有效目录")
+		}
+		return items, huangguoOriginalNextPage.MatchString(body), nil
+	}
 	categories := nativeAICategories
 	if category != "" {
 		for _, entry := range categories {

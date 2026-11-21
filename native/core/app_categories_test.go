@@ -72,6 +72,29 @@ func TestNativeCategoryDiscoveryUsesSourceLinks(t *testing.T) {
 	}
 }
 
+func TestHuangguoOriginalUsesSitePagination(t *testing.T) {
+	d := sourceFixtureDownloader(t, func(request *http.Request) (*http.Response, error) {
+		var header, id string
+		switch request.URL.Path {
+		case "/original/":
+			header = `<link rel="next" href="/original/2/">`
+			id = "100"
+		case "/original/2/":
+			id = "200"
+		default:
+			t.Fatalf("unexpected original catalog route: %s", request.URL.Path)
+		}
+		return sourceFixtureResponse(request, 200, header+fmt.Sprintf(`<div class="hg-drama-card" data-track-id="%s" data-track-title="合成作品"><a href="/video/%s/">合成作品</a></div>`, id, id)), nil
+	})
+	d.cfg.HuangguoAIURL = "https://huangguoai.test"
+	for page, id := range []string{"100", "200"} {
+		items, more, err := d.fetchHuangguoAICatalogPage(context.Background(), page+1, "original")
+		if err != nil || len(items) != 1 || items[0].SourceID != id || more != (page == 0) {
+			t.Fatalf("page %d: items=%v more=%t err=%v", page+1, items, more, err)
+		}
+	}
+}
+
 func TestLegacyResource404KeepsHealthyEndpoint(t *testing.T) {
 	d := legacyFixtureDownloader(t, func(request *http.Request) (*http.Response, error) {
 		if strings.Contains(request.URL.Path, "/detail/") {

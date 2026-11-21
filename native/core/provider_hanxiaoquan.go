@@ -52,6 +52,7 @@ var (
 	reHanxiaoquanAnchor   = regexp.MustCompile(`(?is)<a[^>]*>([^<]+)</a>`)
 	reHanxiaoquanLineTab  = regexp.MustCompile(`(?is)href="#playlist(\d+)"[^>]*>\s*<i[^>]*></i>\s*([^<]+)`)
 	reHanxiaoquanEpisodes = regexp.MustCompile(`(?is)<a title="([^"]*)" href="(/play/\d+-\d+-\d+\.html)"`)
+	reHanxiaoquanPlayPath = regexp.MustCompile(`^/play/(\d+)-(\d+)-(\d+)\.html$`)
 	reHanxiaoquanNow      = regexp.MustCompile(`(?is)var\s+now\s*=\s*["']([^"']+)["']`)
 	reHanxiaoquanMediaAny = regexp.MustCompile(`(?i)https?://[^"'\s<>\\]+\.(?:m3u8|mp4)(?:\?[^"'\s<>\\]*)?`)
 	reHanxiaoquanTag      = regexp.MustCompile(`<[^>]+>`)
@@ -416,6 +417,54 @@ func (d *Downloader) resolveHanxiaoquanMedia(ctx context.Context, task Task) (pr
 	if hanxiaoquanPlayURL(playURL) == "" {
 		return providerMedia{}, errors.New("韩小圈播放页地址无效")
 	}
+	media, err := d.resolveHanxiaoquanMediaAt(ctx, playURL)
+	if err == nil || ctx.Err() != nil || !providerPlaylistNotFound(err) {
+		return media, err
+	}
+	selected, parseErr := url.Parse(playURL)
+	if parseErr != nil {
+		return providerMedia{}, err
+	}
+	identity := reHanxiaoquanPlayPath.FindStringSubmatch(selected.Path)
+	if len(identity) != 4 || identity[1] != sourceID {
+		return providerMedia{}, err
+	}
+	detail, detailErr := d.hanxiaoquanGet(ctx, "/hanxiaoquan/"+sourceID+".html")
+	if detailErr != nil {
+		return providerMedia{}, errors.Join(err, detailErr)
+	}
+	links := reHanxiaoquanEpisodes.FindAllStringSubmatch(detail, -1)
+	selectedTitle := ""
+	for _, link := range links {
+		if link[2] == selected.Path {
+			selectedTitle = hanxiaoquanClean(link[1])
+			break
+		}
+	}
+	if selectedTitle == "" {
+		return providerMedia{}, err
+	}
+	seen := map[string]bool{selected.Path: true}
+	for _, link := range links {
+		candidate := reHanxiaoquanPlayPath.FindStringSubmatch(link[2])
+		if len(candidate) != 4 || candidate[1] != sourceID || candidate[3] != identity[3] ||
+			seen[link[2]] || hanxiaoquanClean(link[1]) != selectedTitle {
+			continue
+		}
+		seen[link[2]] = true
+		media, alternateErr := d.resolveHanxiaoquanMediaAt(ctx, hanxiaoquanPlayURL(link[2]))
+		if alternateErr == nil {
+			return media, nil
+		}
+		err = errors.Join(err, alternateErr)
+		if ctx.Err() != nil || !providerPlaylistNotFound(alternateErr) || len(seen) >= 4 {
+			break
+		}
+	}
+	return providerMedia{}, err
+}
+
+func (d *Downloader) resolveHanxiaoquanMediaAt(ctx context.Context, playURL string) (providerMedia, error) {
 	body, err := d.hanxiaoquanGet(ctx, playURL)
 	if err != nil {
 		return providerMedia{}, err

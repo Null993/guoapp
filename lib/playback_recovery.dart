@@ -35,21 +35,30 @@ class PlaybackRecovery {
 class PlaybackHealth {
   static const stallTimeout = Duration(seconds: 20);
   Duration? _position;
+  Duration? _furthestBuffer;
   DateTime? _lastProgress;
 
   void reset() {
     _position = null;
+    _furthestBuffer = null;
     _lastProgress = null;
   }
 
   bool stalled({
     required Duration position,
+    required Duration buffer,
     required bool playing,
     required bool foreground,
     required DateTime now,
   }) {
     if (!playing || !foreground || position != _position) {
       _position = position;
+      _furthestBuffer = buffer;
+      _lastProgress = now;
+      return false;
+    }
+    if (_furthestBuffer == null || buffer > _furthestBuffer!) {
+      _furthestBuffer = buffer;
       _lastProgress = now;
       return false;
     }

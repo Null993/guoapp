@@ -911,6 +911,7 @@ class _HomeScreenState extends State<HomeScreen> with RouteAware {
       builder: (context, constraints) {
         final television = AppLayout.isTelevision(context);
         final desktop = constraints.maxWidth >= 840;
+        final cinema = !television && widget.store.homeLayout == 'cinema';
         final scaffold = Scaffold(
           appBar: AppBar(
             toolbarHeight: television ? 64 : null,
@@ -1012,16 +1013,17 @@ class _HomeScreenState extends State<HomeScreen> with RouteAware {
                       onPressed: () => setState(() => _selectionMode = true),
                       icon: const Icon(Icons.checklist_rounded),
                     ),
-                  IconButton(
-                    key: const ValueKey('toggle-search'),
-                    tooltip: _searchVisible ? '收起搜索' : '搜索',
-                    icon: Icon(
-                      _searchVisible
-                          ? Icons.search_off_rounded
-                          : Icons.search_rounded,
+                  if (!cinema)
+                    IconButton(
+                      key: const ValueKey('toggle-search'),
+                      tooltip: _searchVisible ? '收起搜索' : '搜索',
+                      icon: Icon(
+                        _searchVisible
+                            ? Icons.search_off_rounded
+                            : Icons.search_rounded,
+                      ),
+                      onPressed: _toggleSearch,
                     ),
-                    onPressed: _toggleSearch,
-                  ),
                 ],
                 if (_tab == 0 &&
                     !_showRecommendations &&
@@ -1189,7 +1191,10 @@ class _HomeScreenState extends State<HomeScreen> with RouteAware {
                                 title: '暂无可用站源',
                                 message: '请联系管理员为当前用户开放站源。',
                               )
-                            : _catalog(selectionInBody: desktop || television)
+                            : _catalog(
+                                selectionInBody: desktop || television,
+                                cinema: cinema,
+                              )
                       : _tab == 3
                       ? DownloadsScreen(
                           repository: widget.repository,
@@ -1219,6 +1224,7 @@ class _HomeScreenState extends State<HomeScreen> with RouteAware {
               : _selectionMode
               ? _selectionBar()
               : AppBottomNavigation(
+                  cinema: cinema,
                   selectedIndex: _tab,
                   onDestinationSelected: _onNavSelected,
                   destinations: [
@@ -1267,18 +1273,25 @@ class _HomeScreenState extends State<HomeScreen> with RouteAware {
     ),
   );
 
-  Widget _catalog({required bool selectionInBody}) {
+  Widget _catalog({required bool selectionInBody, required bool cinema}) {
     final items = _visible;
     final television = AppLayout.isTelevision(context);
+    final showSearch = !television && (_searchVisible || cinema);
+    final resume = cinema && !_selectionMode && _search.text.trim().isEmpty
+        ? widget.store.history.where((entry) {
+            return !entry.finished &&
+                widget.store.allowsSource(entry.drama.source);
+          }).firstOrNull
+        : null;
     return Column(
       children: [
-        if (_searchVisible && !television)
+        if (showSearch)
           Padding(
             padding: const EdgeInsets.fromLTRB(16, 4, 16, 4),
             child: SearchInput(
               key: ValueKey('search-${_group.id}'),
               controller: _search,
-              autofocus: true,
+              autofocus: _searchVisible && !cinema,
               hint: _searchHint,
               suggestions: _searchSuggestions
                   ? widget.repository.suggestions
@@ -1288,7 +1301,7 @@ class _HomeScreenState extends State<HomeScreen> with RouteAware {
               onSearch: _submitSearch,
             ),
           ),
-        if (_searchVisible &&
+        if (showSearch &&
             _search.text.trim().isEmpty &&
             widget.store.recentSearches.isNotEmpty)
           Padding(
@@ -1323,6 +1336,34 @@ class _HomeScreenState extends State<HomeScreen> with RouteAware {
                   icon: const Icon(Icons.delete_outline_rounded, size: 20),
                 ),
               ],
+            ),
+          ),
+        if (resume != null)
+          Padding(
+            padding: const EdgeInsets.fromLTRB(16, 4, 16, 8),
+            child: Card(
+              margin: EdgeInsets.zero,
+              child: ListTile(
+                key: const ValueKey('cinema-continue-watching'),
+                leading: SizedBox(
+                  width: 42,
+                  height: 54,
+                  child: DramaCover(
+                    drama: resume.drama,
+                    repository: widget.repository,
+                    episodeLabel: '',
+                    radius: 6,
+                  ),
+                ),
+                title: Text(
+                  resume.drama.title,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                ),
+                subtitle: Text('继续观看 · 第 ${resume.episode} 集'),
+                trailing: const Icon(Icons.play_circle_outline_rounded),
+                onTap: () => _openDrama(resume.drama, resume: true),
+              ),
             ),
           ),
         CatalogFilters(

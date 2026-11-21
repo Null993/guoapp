@@ -2,6 +2,7 @@ import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
 
+import 'danmaku_models.dart';
 import 'models.dart';
 import 'episode_browser.dart';
 import 'playback_preferences.dart';
@@ -60,6 +61,66 @@ class PlayerMenu extends StatefulWidget {
 class _PlayerMenuState extends State<PlayerMenu> {
   bool _busy = false;
   String? _error;
+
+  Future<void> _editDanmakuFilter() async {
+    final initial = widget.preferences.danmakuFilter;
+    var keywords = initial.keywords;
+    var hideDuplicates = initial.hideDuplicates;
+    final filter = await showDialog<DanmakuFilter>(
+      context: context,
+      builder: (context) => StatefulBuilder(
+        builder: (context, update) => AlertDialog(
+          title: const Text('弹幕筛选'),
+          content: SingleChildScrollView(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                TextFormField(
+                  initialValue: initial.keywords,
+                  minLines: 2,
+                  maxLines: 5,
+                  maxLength: DanmakuFilter.maxKeywordLength,
+                  decoration: const InputDecoration(
+                    labelText: '屏蔽关键词',
+                    helperText: '每行一个，忽略大小写',
+                  ),
+                  onChanged: (value) => keywords = value,
+                ),
+                SwitchListTile.adaptive(
+                  contentPadding: EdgeInsets.zero,
+                  title: const Text('过滤短时间内的重复弹幕'),
+                  value: hideDuplicates,
+                  onChanged: (value) => update(() => hideDuplicates = value),
+                ),
+              ],
+            ),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(context),
+              child: const Text('取消'),
+            ),
+            FilledButton(
+              onPressed: () => Navigator.pop(
+                context,
+                DanmakuFilter(
+                  keywords: keywords.trim(),
+                  hideDuplicates: hideDuplicates,
+                ),
+              ),
+              child: const Text('保存'),
+            ),
+          ],
+        ),
+      ),
+    );
+    if (!mounted || filter == null) return;
+    await _run(
+      () => widget.onPreferences(
+        widget.preferences.copyWith(danmakuFilter: filter),
+      ),
+    );
+  }
 
   Future<void> _run(Future<void> Function() action) async {
     if (_busy) return;
@@ -254,6 +315,13 @@ class _PlayerMenuState extends State<PlayerMenu> {
                       preferences.copyWith(danmaku: value),
                     ),
                   ),
+          ),
+          ListTile(
+            key: const ValueKey('player-danmaku-filter'),
+            contentPadding: EdgeInsets.zero,
+            title: const Text('弹幕筛选'),
+            trailing: const Icon(Icons.chevron_right_rounded),
+            onTap: _busy ? null : _editDanmakuFilter,
           ),
           if (widget.onRetryDanmaku != null)
             TextButton.icon(
